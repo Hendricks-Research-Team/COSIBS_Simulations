@@ -1,0 +1,99 @@
+---
+title: "HiddenStructures_Updated"
+author: "Jackelyn Valencia"
+date: "2023-07-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+HiddenStructures=function(rep, n, t, shape, b_prs, b_env, seed, noise, k.method){
+  
+  ### Function to run many simulations of environmental factor and PRS to calculate traits and residuals. These residuals are then processed for patterns. The function then produces the accuracy of the particular test. This process is then repeated the desired number of replicates and output a dataframe of the accuracy results. 
+   
+   
+   ############ parameter description ###############
+   ### rep is the number of replicates you would like to run
+   ### n is the number of individuals simulated
+   ### t is the maximum number of trait/PRS pairs the simulation generates up to 50
+   ### shape is the shape of the distribution of the environmental factor, (Options:unimodal, bimodal, both; optional; default both)
+   ### b_prs is the weight of the PRS in calculating phenos (optional; default 1)
+   ### b_env is the weight of the env in calculating phenos (optional; default 1)
+   ### seed is to specify a certain seed to replicate results (optional; default random)
+   ### noise is the amount of random noise in system (higher -> more noise; optional; default random)
+   ### k.method is the method you would like to use to select the optimal k from the gap statistic output (Options: globalmax, firstmax, Tibs2001SEmax, firstSEmax, globalSEmax; optional; default globalmax)
+  
+  ### Output:
+  ### accuracy is a dataframe of the accuracy results
+  
+   ### Initialize Accuracy dataframe
+  if(shape=="unimodal" | shape=="bimodal"){
+    Accuracy = rep(NA, rep)
+  } else {
+    Accuracy1 = rep(NA,rep)
+    Accuracy2 = rep(NA,rep)
+  }
+  
+   ### Replicate loop
+  for (i in 1:rep){
+     ### Simulate Data
+    sim = PRSEnvPheSim(n=n, t=t, shape=shape, b_prs=b_prs, b_env=b_env, seed=seed, noise = noise)
+    
+     ### Determine which complete dataframe to use
+    if (shape == "unimodal"){
+      df=sim$Unimode
+    } else if (shape == "bimodal"){
+      df=sim$Bimode
+    } else {
+      df=rbind(sim$Unimode,sim$Bimode)
+    }
+    
+    ### Calculate residuals
+    error = PheRes(df = df, shape = shape)
+    
+    ### Call error dataframe
+    if (shape == "unimodal"|shape == "bimodal"){
+      E=error$E
+    } else {
+      E_Uni=error$E_Uni
+      E_Bi=error$E_Uni
+      E=rbind(E_Uni,E_Bi)
+    }
+    
+    ### Call true cluster
+    if (shape == "unimodal"|shape == "bimodal"){
+      Env=sim$Env
+    } else {
+      Env_Uni=sim$Env_Uni
+      Env_Bi=sim$Env_Bi
+      Env=rbind(Env_Uni,Env_Bi)
+    }
+    
+    ### Cluster residuals with k-means
+    clusters = clustering(E=E,trueclust = Env,shape=shape, k.method = k.method, seed = sim$seed)
+    
+    if (shape == "unimodal"|shape == "bimodal"){
+      print("hidden structres: uni and bi accuracy")
+      Accuracy[i] = clusters
+    } else {
+      print("hidden structures: both accuracy")
+      print(clusters$Accuracy_Uni)
+      Accuracy1[i] = clusters$Accuracy_Uni
+      Accuracy2[i] = clusters$Accuracy_Bi
+    }
+  }
+  
+  if (shape == "unimodal"|shape == "bimodal"){
+    return(Accuracy)
+  } else {
+    Accuracy = cbind(Accuracy1,Accuracy2)
+    colnames(Accuracy)[1] ="Unimodal"
+    colnames(Accuracy)[2] ="Bimodal"
+    
+    return(Accuracy)
+  }
+}
+```
