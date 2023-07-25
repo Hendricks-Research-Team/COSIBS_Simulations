@@ -1,0 +1,320 @@
+---
+title: "PRSEnvPheSim_Updated"
+author: "Jackelyn Valencia"
+date: "2023-07-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+PRSEnvPheSim = function(n, t, shape, b_prs, b_env, seed, noise) {
+   
+   ### Function to run many simulations of environmental factor and PRS to calculate traits and residuals
+   
+   
+   ############ parameter description ###############
+   ### n is the number of individuals simulated
+   ### t is the maximum number of trait/PRS pairs the simulation generates up to 50
+   ### shape is the shape of the distribution of the environmental factor, (Options:unimodal, bimodal, both; optional; default both)
+   ### b_prs is the weight of the PRS in calculating phenos (optional; default 1)
+   ### b_env is the weight of the env in calculating phenos (optional; default 1)
+   ### seed is to specify a certain seed to replicate results (optional; default random)
+   ### noise is the amount of random noise in system (higher -> more noise; optional; default random)
+  
+   ### output:
+   ### Unimode and Bimode are the dataframes of PRS, environmental factors, and corresponding traits with the unimodally distributed environment and bimodally distributed environment, respectively
+   ### Phe, Phe_Uni and Phe_Bi are our matrices of traits calculated with the unimodal or bimodal environment
+   ### PRS, PRS_Uni and PRS_Bi are our matrices of polygenic risk scores
+   ### Env, Env_Uni and Env_Bi are vectors of environmental factors based on the shape of their distribution (unimodal or bimodal)
+   ### shape is the shape of the distribution of the environmental factor, (Options:unimodal, bimodal, both; optional; default both)
+   ### Seed is the seed used in the simulation
+   ### Noise is a list of the noise used in the calculation of the traits
+  
+  ### Load required package
+  library(tidyverse)
+  
+   ### Assign default values for optional arguments
+   
+   if(missing(b_prs)){
+     b_prs=1
+   } else{
+     b_prs
+   }
+  
+   if(missing(b_env)){
+     b_env=1
+   } else{
+     b_env
+   }
+  
+   if(missing(seed)) {
+     seed = runif(1,1,10000)
+   } else{
+     seed
+   }
+  
+   if(missing(noise)) {
+     sd_noise = runif(1,0.05,1.5)
+     noise = rnorm(n, 0, sd_noise)
+   } else{
+     noise
+   }
+  
+   ### Creates an error for inputs that are out of bounds for the t argument.
+   if (t>50){
+     print("Maximum number of traits is greater than 50. Please select a value for t between 1 and 50.")
+   }
+   if (t<1){
+     print("Maximum number of traits is less than 1. Please select a value for t between 1 and 50.")
+   }
+  
+   ### Set seed
+   set.seed(seed)
+   
+   ### Initiate loop for the requested number of reps
+
+ 
+   ######################## Genetic #################
+   ### create df of PRS: t columns of n individual PRS scores for 50 different traits
+   namelist=NULL
+   df=matrix(nc=t, nr=n)
+   for (i in 1:t) {
+   ### n samples from each prs ~ beta dist. with runif random alpha/beta parameters
+    df[,i] = rbeta(n,runif(1,0.01,10),runif(1,0.01,10))
+   ### names: prs1, prs2, etc.
+    name = paste(c("prs",i),collapse="")
+    namelist = c(namelist,name)
+   }
+   df = as.data.frame(df)
+   
+   ######################## Environment #################
+   ### environmental factors expand the data frame of factors based on chance (0.5)
+   ### env1 gets 1 of two distributions to create bi-modal dist or is uni-modal
+   if (shape == "unimodal"){
+        chance = runif(n)>0.5
+   ### unimodal environmental factor dist.
+        unimode = rbeta(n,2,2.5)
+      
+        
+        df1 = cbind(df,unimode)
+   ### assign col names
+        namelist = c(namelist,"env")
+        names(df1) = namelist
+   } else if (shape == "bimodal"){
+        chance = runif(n)>0.5
+        bimode = ifelse(chance,rbeta(n,5,20),rbeta(n,20,5))
+        df1 = cbind(df,bimode)
+   ### assign col names
+        namelist = c(namelist,"env")
+        names(df1) = namelist
+   } else {
+    ### if not unimodal or bimodal, default of both
+        chance = runif(n)>0.5
+        bimode = ifelse(chance,rbeta(n,5,20),rbeta(n,20,5))
+   ### unimodal environmental factor dist.
+        unimode = rbeta(n,2,2.5)
+  
+        df1 = cbind(df,unimode)
+        df2 = cbind(df,bimode)
+   ### assign col names
+        namelist = c(namelist,"env")
+        names(df1) = namelist
+        names(df2) = namelist
+   }
+  
+   ######################## Phenotype #################
+   ### create traits and add to df's as new columns
+   noisetracker = NULL
+   p = ncol(df1)
+   for (i in 1:t) {
+     ### names: trait1, trait2, etc.
+     namelist = c(namelist,paste0(c("trait",i),collapse=""))
+  
+     if (shape == "unimodal"|shape == "bimodal"){
+       df1[,p+i] = b_prs*df1[,i] + b_env*df1$env + noise
+     } else {
+      ### if not unimodal or bimodal, default of both
+       df1[,p+i] = b_prs*df1[,i] + b_env*df1$env + noise
+       df2[,p+i] = b_prs*df2[,i] + b_env*df2$env + noise
+     }
+     ### store noise if we want to look at it
+     noisetracker = cbind(noisetracker,noise)
+     }
+   ### assign colnames
+     if (shape == "unimodal"|shape == "bimodal"){
+       names(df1) = namelist
+     } else {
+      ### if not unimodal or bimodal, default of both
+       names(df1) = namelist
+       names(df2) = namelist
+     }
+
+   
+   ######################## Data Storage #################
+   ### create list of function's simulated data for returning
+   
+   ### isolate desired data frames
+   
+    if (shape == "unimodal"|shape == "bimodal"){
+       prs1 <- df1 %>%
+         select(starts_with("prs"))
+       env1 <- df1 %>%
+         select(starts_with("env"))
+       trait1 <- df1 %>%
+         select(starts_with("trait"))
+       Phe <- as.matrix(trait1)
+       PRS <- as.matrix(prs1)
+       Env <- as.matrix(env1)
+    } else {
+    ### if not unimodal or bimodal, default of both
+      prs1 <- df1 %>%
+         select(starts_with("prs"))
+      env1 <- df1 %>%
+         select(starts_with("env"))
+      trait1 <- df1 %>%
+         select(starts_with("trait"))
+      Phe_Uni <- as.matrix(trait1)
+      PRS_Uni <- as.matrix(prs1)
+      Env_Uni <- as.matrix(env1)
+      
+      prs2 <- df2 %>%
+         select(starts_with("prs"))
+      env2 <- df2 %>%
+         select(starts_with("env"))
+      trait2 <- df2 %>%
+         select(starts_with("trait"))
+      Phe_Bi <- as.matrix(trait2)
+      PRS_Bi <- as.matrix(prs2)
+      Env_Bi <- as.matrix(env2)
+    }
+   
+   ### create a list of desired dataframes to call
+    if (shape == "unimodal"){
+       SimData <- list("Unimode"=df1,"Phe"=Phe,"PRS"=PRS, "Env"=Env, "Seed"=seed,"Noise"=noise, shape = shape)
+    } else if (shape == "bimodal"){
+       SimData <- list("Bimode"=df1, "Phe"=Phe,"PRS_Bi"=PRS, "Env"=Env, "Seed"=seed, "Noise"=noise, shape = shape)
+    } else {
+      ### if not unimodal or bimodal, default of both
+       SimData <- list("Unimode"=df1,"Bimode"=df2,"Phe_Uni"=Phe_Uni,"PRS_Uni"=PRS_Uni, "Env_Uni"=Env_Uni,"Phe_Bi"=Phe_Bi,"PRS_Bi"=PRS_Bi, "Env_Bi"=Env_Bi, "Seed"=seed, "Noise"=noise, shape = shape)
+     }
+
+   return(SimData)
+     
+   }
+```
+
+```{r}
+PheRes = function(df, shape){
+     
+    ### function to calculate the difference between the simulated data and a multivariate model.
+  
+    ############ parameter description ###############
+    ### Inputs: 
+    ### df is the complete data frame we want to explore from our simulation. Either the Unimode or Bimode matrix, or a concatenation of the two (df = rbind(sim$Unimode, sim$Bimode) if you would like to use the both option.
+    ### shape is the shape of the distribution of the environmental factor, (Options:unimodal, bimodal, both)  
+
+    ### Ouputs:
+    ### E, E_Uni, and E_Bi are our matrices of the error or residuals from the multivariate model, respectively
+  
+     ### isolate desired data frames
+     ### changed df to df$Unimode
+      if (shape == "unimodal"){
+       prs1 <- df$Unimode %>% 
+         select(starts_with("prs"))
+       env1 <- df$Unimode %>%
+         select(starts_with("env"))
+       trait1 <- df$Unimode %>%
+         select(starts_with("trait"))
+       Phe <- as.matrix(trait1)
+       PRS <- as.matrix(prs1)
+       Env <- as.matrix(env1)
+
+      } else if (shape == "bimodal"){
+      ### added bimodal as its own shape to access it
+        prs1 <- df$Bimode %>% 
+         select(starts_with("prs"))
+       env1 <- df$Bimode %>%
+         select(starts_with("env"))
+       trait1 <- df$Bimode %>%
+         select(starts_with("trait"))
+       Phe <- as.matrix(trait1)
+       PRS <- as.matrix(prs1)
+       Env <- as.matrix(env1)
+      } else {
+    ### if not unimodal or bimodal, default of both
+      ### separate the matrix into an unimodal df (df1) and a bimodal df (df2)
+      
+      ### Changed: Since its neither, the unimodal df and bimodal df from the input parameter         ### can be split into two by looking at df$Unimode and df$Bimode
+        
+      # mp1 = (nrow(df)/2) #midpoint 1
+      # mp2 = mp1+1 #midpoint 2
+      # ep = nrow(df) #endpoint
+      # df1 = df[1:mp1,] #unimodal 
+      # df2 = df[mp2:ep,] #bimodal
+        
+      df1 = df$Unimode
+      df2 = df$Bimode
+      
+      prs1 <- df1 %>%
+         select(starts_with("prs"))
+      env1 <- df1 %>%
+         select(starts_with("env"))
+      trait1 <- df1 %>%
+         select(starts_with("trait"))
+      Phe_Uni <- as.matrix(trait1)
+      PRS_Uni <- as.matrix(prs1)
+      Env_Uni <- as.matrix(env1)
+      
+      prs2 <- df2 %>%
+         select(starts_with("prs"))
+      env2 <- df2 %>%
+         select(starts_with("env"))
+      trait2 <- df2 %>%
+         select(starts_with("trait"))
+      Phe_Bi <- as.matrix(trait2)
+      PRS_Bi <- as.matrix(prs2)
+      Env_Bi <- as.matrix(env2)
+    }
+  
+  ### calculates residuals
+   
+   if (shape == "unimodal"|shape == "bimodal"){
+    ### transpose PRS
+      PRS_t <- t(PRS)
+    ### calculate beta
+      B <- solve(PRS_t%*%PRS) %*% (PRS_t%*%Phe)
+      Pheno_fit <- PRS %*% B
+      E <- Phe - Pheno_fit
+  
+   } else {
+     ### if not unimodal or bimodal, default of both
+     ### transpose PRS Unimodal
+      PRS_Uni_t <- t(PRS_Uni)
+     ### calculate beta for unimodal
+      B_Uni <- solve(PRS_Uni_t%*%PRS_Uni) %*% (PRS_Uni_t%*%Phe_Uni)
+      Pheno_fit_U <- PRS_Uni %*% B_Uni
+      E1 <- Phe_Uni - Pheno_fit_U
+      
+     ### transpose PRS Bimodal
+      PRS_Bi_t <- t(PRS_Bi)
+     ### calculate beta for Bimodal
+      B_Bi <- solve(PRS_Bi_t%*%PRS_Bi) %*% (PRS_Bi_t%*%Phe_Bi)
+      Pheno_fit_B <- PRS_Bi %*% B_Bi
+      E2 <- Phe_Bi - Pheno_fit_B
+   }
+  
+     ### create a list of desired dataframes to call
+    if (shape == "unimodal" | shape == "bimodal"){
+       Errors <- list("E"=E)
+    } else {
+      ### if not unimodal or bimodal, default of both
+       Errors <- list("E_Uni"=E1, "E_Bi"=E2)
+    }
+  return(Errors)
+}
+
+```
