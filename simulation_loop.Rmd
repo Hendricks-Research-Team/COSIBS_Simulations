@@ -1,0 +1,148 @@
+---
+title: "PRS Simulation"
+author: "Jack Pattee"
+date: "9/15/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(knitr)
+library(mclust)
+library(tidyverse)
+library(ggplot2)
+
+source("~/Documents/Hendricks PRS/Simulation Code/simulation_functions.R")
+
+###set random seed
+set.seed(3308004)
+```
+
+This RMarkdown executes simulations as described in 'Hendricks Report 2' (Sept 11, 2023). The structure of the simulation is described in that document; the inputs to the simulation are described here, the simulations themselves conducted, and the accuracy of the simulations is assessed.
+
+The following describes the values the simulation parameter takes. Only one parameter varies at a time. Non-varying parameters always take the **bolded** value.
+
+n: 1000, **2000**, 4000
+
+t: 10, **20**, 50
+
+Relative proportion of phenotypic variance controlled by $\sf{X_{\beta}}$, $\sf{Z_{\delta}}$, and $\sf{\epsilon}$, in ordered triplets.
+.1, .1, .8
+.2, .05, .75
+**.3, .1, .6**
+.3, .05, .65
+.5, .1, .4
+.5, .05, .4
+.7, .05, .25
+
+Distribution of Z: Case 1, Case 2, **Case 3**
+
+When Z is distributed as Case 3, the proportion of structural covariate Z draws that is distributed at point mass zero: .2, **.5**, .8.
+
+In the case of Z distributed according to case 3, the environmental error is bimodal. In this case, the 'effectiveness' will be assessed according to accuracy of k-means clustering. Specifically, k-means clusters will be estimated with two cluster centers, and cluster quality will be assessed using the adjusted Rand index. In the case of Z distributed according to case 1 or case 2, the environmental error is unimodal. In this case, the effectiveness of the method will be assessed as the proportion of variation in environmental error explained by each of the first five principal components in single linear regression. Each simulation is run for 200 replications.
+
+
+```{r, echo = FALSE, cache = TRUE}
+#set-up simulation variables to iterate over
+n = c(2000, 1000, 4000, rep(2000, 12))
+t = c(20, 20, 20, 10, 50, rep(20,10))
+vxb = c(rep(.3, 5), .1, .2, .3, .5, .5, .7, rep(.3, 4))
+vzd = c(rep(.1, 5), .1, .05, .05, .1, .05, .05, rep(.1, 4))
+ve = c(rep(.6, 5), .8, .75, .65, .4, .4, .25, rep(.6, 4))
+Zset = c(rep(3, 11), 1, 2, 3, 3)
+Zp = c(rep(.5, 13), .2, .8)
+simSettings = data.frame(Setting=1:length(n), n, t, vxb,vzd,ve,Zset, Zp)
+kable(simSettings, caption = "Table 1: Simulation Settings")
+
+reps = 200
+
+clusterAccs = NULL
+pcaResults = NULL
+clusterSetting = NULL
+pcaSetting = NULL
+
+for(i in 1:nrow(simSettings)){
+  for(j in 1:reps){
+    ####simulate phenotypes, PRSs
+    ###arguments:
+    #unimodal / bimodal
+    #sample size n
+    #number of polygenic risk scores t
+    #proportion of variance explainable by PRS
+    #proportion of structural variance
+    #proportion of random variance
+    #distribution of structural error Z term
+    simData = prsSim(n = n[i], t = t[i], bprs = vxb[i], bst = vzd[i], beps = ve[i], zStruct = Zset[i], zStructP = Zp[i])
+  
+    ###residuals from univariate regression of simulated phenotype on PRS
+    resids = getResiduals(simData$phenos, simData$prs)
+  
+    if(Zset[i]==3){
+      ###if we have a bimodal distribution of structural error, report clustering accuracy
+        clusterAccs = c(clusterAccs, clustering(resids, simData$clust, method = "kmeans"))
+        clusterSetting = c(clusterSetting, i)
+      }else if (Zset[i]%in%c(1,2)){
+        ###if we have a continuous distribution of structural error, assess PCA
+        pcaResults = rbind(pcaResults,pcaModeling(resids, simData$Z))
+        pcaSetting = c(pcaSetting,i)
+      }
+  }
+}
+```
+
+Boxplot of clustering accuracy, by simulation setting. Note that simulation settings are indexed by rows of Table 1 above. Boxes are labeled by the proportion of phenotypic variance explained by structural factors (vzd).
+
+```{r, echo = FALSE}
+clusterFrame = data.frame(Setting = as.factor(clusterSetting), Accuracy = clusterAccs)
+ypos = clusterFrame %>% 
+  group_by(Setting) %>%
+  summarize(ypos = min(Accuracy)-.025)
+labelDat = data.frame(Setting = ypos$Setting, VZD = vzd[Zset==3], ypos = ypos$ypos)
+ggBox = ggplot(data = clusterFrame, aes(x = Setting, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + 
+  geom_text(data = labelDat, aes(label = VZD,x = Setting, y = ypos), show.legend = FALSE)
+print(ggBox)
+```
+
+For the two simulation settings with unimodal error (simulations 12 and 13), we report the proportion of variance explained by each of the first five principal components.
+
+```{r, echo = FALSE}
+twelveDat = data.frame(PC = as.factor(rep(1:5, each = sum(pcaSetting==12))), Accuracy = c(pcaResults[pcaSetting==12,]))
+ggBox12 = ggplot(data = twelveDat, aes(x = PC, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + ggtitle("Simulation 12: PVE by each PC")
+print(ggBox12)
+
+thirteenDat = data.frame(PC = as.factor(rep(1:5, each = sum(pcaSetting==13))), Accuracy = c(pcaResults[pcaSetting==13,]))
+ggBox13 = ggplot(data = thirteenDat, aes(x = PC, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + ggtitle("Simulation 13: PVE by each PC")
+print(ggBox13)
+```
+
+Example plots of $\sf{X_{\beta}}$, $\sf{Z_{\delta}}$, and $\sf{\epsilon}$ for a single phenotype in some simulation settings.
+
+```{r, echo = FALSE}
+tempSim1 = prsSim(n = 2000, t = 20, bprs = .3, bst = .1, beps = .6, zStruct = 3, zStructP = .5)
+ggDat1 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
+                    Value = c(tempSim1$prs[,1],tempSim1$struct[,1],tempSim1$error[,1]))
+ggDensity1 = ggplot(data = ggDat1, aes(x = Value, fill = Source)) + 
+  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 1")
+print(ggDensity1)
+
+tempSim12 = prsSim(n = 2000, t = 20, bprs = .3, bst = .1, beps = .6, zStruct = 1, zStructP = .5)
+ggDat12 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
+                    Value = c(tempSim12$prs[,1],tempSim12$struct[,1],tempSim12$error[,1]))
+ggDensity12 = ggplot(data = ggDat12, aes(x = Value, fill = Source)) + 
+  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 12")
+print(ggDensity12)
+
+tempSim13 = prsSim(n = 2000, t = 20, bprs = .3, bst = .1, beps = .6, zStruct = 2, zStructP = .5)
+ggDat13 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
+                    Value = c(tempSim13$prs[,1],tempSim13$struct[,1],tempSim13$error[,1]))
+ggDensity13 = ggplot(data = ggDat13, aes(x = Value, fill = Source)) + 
+  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 13")
+print(ggDensity13)
+```
+
+
