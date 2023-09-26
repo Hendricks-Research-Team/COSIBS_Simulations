@@ -1,0 +1,300 @@
+---
+title: "PRS Simulation: 2"
+author: "Jack Pattee"
+date: "9/25/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(knitr)
+library(mclust)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+
+source("~/Documents/Hendricks PRS/Simulation Code/simulation_functions.R")
+
+###set random seed
+set.seed(3308004)
+```
+
+This RMarkdown executes simulations as described in 'Hendricks Report 2' (Sept 11, 2023). The structure of the simulation is described in that document; the inputs to the simulation are described here, the simulations themselves conducted, and the accuracy of the simulations is assessed.
+
+The following describes the values the simulation parameter takes. Only one parameter varies at a time. Non-varying parameters always take the **bolded** value.
+
+n: 1000, **2000**, 4000
+
+t: 5, 10, **20**, 30, 50
+
+Relative proportion of phenotypic variance controlled by $\sf{X_{\beta}}$, $\sf{Z_{\delta}}$, and $\sf{\epsilon}$, in ordered triplets.
+
+.1, .1, .8
+
+.2, .1, .7
+
+**.3, .1, .6**
+
+.4, .1, .5
+
+.5, .1, .4
+
+.6, .1, .3
+
+.7, .1, .2
+
+.1, .05, .85
+
+.2, .05, .75
+
+.3, .05, .65
+
+.4, .05, .55
+
+.5, .05, .45
+
+.6, .05, .35
+
+.7, .05, .25
+
+
+Distribution of Z: Both Case 1 and Case 2 will be conducted for all other simulation settings (except for $p$, as below, which will only be done for Case 2).
+
+When Z is distributed as Case 2, the proportion of structural covariate Z draws that is distributed at point mass zero: .2, **.5**, .8.
+
+In the case of Z distributed according to case 2, the environmental error is bimodal. In this case, the 'effectiveness' will be assessed according to accuracy of k-means clustering. Specifically, k-means clusters will be estimated with two cluster centers, and cluster quality will be assessed using the adjusted Rand index. In the case of Z distributed according to case 1, the structural error is unimodal. In both case 1 and case 2, the effectiveness of the method will be assessed as the proportion of variation in environmental error explained by each of the first five principal components in single linear regression. Each simulation is run for 200 replications.
+
+
+```{r, echo = FALSE, cache = TRUE}
+#set-up simulation variables to iterate over
+n = c(rep(c(2000, 1000, 4000, rep(2000, 17)), 2), 2000, 2000)
+t = c(rep(c(20, 20, 20, 5, 10, 30, 50, rep(20, 13)), 2), 20, 20)
+vxb = c(rep(c(rep(.3, 7), .1, .2, .4, .5, .6, .7,seq(.1, .7, .1)),2),.3, .3)
+vzd = c(rep(c(rep(.1, 7), rep(.1, 6), rep(.05,7)),2), .1, .1)
+ve = c(rep(c(rep(.6, 7), .8, .7, .5, .4, .3, .2, rev(seq(.25,.85,.1))), 2), .6, .6)
+Zset = c(rep(3, 20), rep(1, 20), 3, 3)
+Zp = c(rep(.5, 40), .2, .8)
+simSettings = data.frame(Setting=1:length(n), n, t, vxb,vzd,ve,Zset, Zp)
+kable(simSettings, caption = "Table 1: Simulation Settings")
+
+reps = 200
+
+clusterAccs = NULL
+pcaResults = NULL
+clusterSetting = NULL
+pcaSetting = NULL
+
+for(i in 1:nrow(simSettings)){
+  for(j in 1:reps){
+    ####simulate phenotypes, PRSs
+    ###arguments:
+    #unimodal / bimodal
+    #sample size n
+    #number of polygenic risk scores t
+    #proportion of variance explainable by PRS
+    #proportion of structural variance
+    #proportion of random variance
+    #distribution of structural error Z term
+    simData = prsSim(n = n[i], t = t[i], bprs = vxb[i], bst = vzd[i], beps = ve[i], zStruct = Zset[i], zStructP = Zp[i])
+  
+    ###residuals from univariate regression of simulated phenotype on PRS
+    resids = getResiduals(simData$phenos, simData$prs)
+  
+    if(Zset[i]==3){
+      ###if we have a bimodal distribution of structural error, report clustering accuracy
+        clusterAccs = c(clusterAccs, clustering(resids, simData$clust, method = "kmeans"))
+        clusterSetting = c(clusterSetting, i)
+      }
+    ##assess PCA whether we have unimodal or bimodal structural error
+    pcaResults = rbind(pcaResults,pcaModeling(resids, simData$Z))
+    pcaSetting = c(pcaSetting,i)
+
+  }
+}
+```
+
+Visualizations of clustering accuracy against VXB, with other parameters held constant (except for VE, which varies with VXB). Boxplots of clustering accuracy by simulation setting. Simulation setting (according to rows of Table 1) is annotated to each boxplot.
+
+```{r, echo = FALSE}
+###define clustering accuracy dataset for plotting
+clusterFrame = data.frame(Setting = as.factor(clusterSetting), 
+                          Accuracy = clusterAccs, 
+                          VXB = rep(vxb, each = reps)[rep(Zset,each=reps)==3],
+                          t = rep(t, each = reps)[rep(Zset,each=reps)==3],
+                          n = rep(n, each = reps)[rep(Zset,each=reps)==3], 
+                          p = rep(Zp, each = reps)[rep(Zset,each=reps)==3])
+ypos = clusterFrame %>% 
+  group_by(Setting) %>%
+  summarize(ypos = min(Accuracy)-.025)
+labelDat = data.frame(Setting = ypos$Setting, 
+                      VZD = as.factor(vzd[Zset==3]), 
+                      VXB = as.factor(vxb[Zset==3]), 
+                      t = as.factor(t[Zset==3]), 
+                      n = as.factor(n[Zset==3]),
+                      p = as.factor(Zp[Zset==3]),
+                      ypos = ypos$ypos)
+
+#subset data for plotting
+cf1 = subset(clusterFrame, Setting%in%c(1,8,9,10,11,12,13))
+cf1$VXB = as.factor(cf1$VXB)
+lb1 = subset(labelDat, Setting%in%c(1,8,9,10,11,12,13))
+
+#subset data for plotting
+cf2 = subset(clusterFrame, Setting%in%14:20)
+cf2$VXB = as.factor(cf2$VXB)
+lb2 = subset(labelDat, Setting%in%14:20)
+
+ggBox1 = ggplot(data = cf1, aes(x = VXB, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + 
+  geom_text(data = lb1, aes(label = Setting,x = VXB, y = ypos), show.legend = FALSE) + 
+  ggtitle("ARI for Simulations with VZD = 0.1")
+print(ggBox1)
+
+ggBox2 = ggplot(data = cf2, aes(x = VXB, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + 
+  geom_text(data = lb2, aes(label = Setting,x = VXB, y = ypos), show.legend = FALSE) + 
+  ggtitle("ARI for Simulations with VZD = 0.05")
+print(ggBox2)
+
+cfBoth = rbind.data.frame(cbind.data.frame(cf1, VZD = as.factor(rep(.1,nrow(cf1)))),
+                          cbind.data.frame(cf2, VZD = as.factor(rep(.05,nrow(cf2)))))
+labelBoth = subset(labelDat, Setting%in%c(1,8:20))
+
+ggBoxBoth = ggplot(data = cfBoth, aes(x = VXB, y = Accuracy, color = VZD)) + 
+  geom_boxplot(position = position_dodge(0)) + theme_bw() + 
+  geom_text(data = labelBoth, aes(label = Setting,x = VXB, y = ypos, color = VZD), show.legend = FALSE)
+print(ggBoxBoth)
+```
+
+Visualize clustering accuracy against the number of traits.
+
+```{r, echo = FALSE}
+cft = subset(clusterFrame, Setting%in%c(1,4,5,6,7))
+cft$t = as.factor(cft$t)
+lbt = subset(labelDat, Setting%in%c(1,4,5,6,7))
+
+ggBoxt = ggplot(data = cft, aes(x = t, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of traits") + 
+  geom_text(data = lbt, aes(label = Setting, x = t, y = ypos), show.legend = FALSE) + 
+  ggtitle("ARI for Simulations with varying number of traits")
+print(ggBoxt)
+```
+
+Visualize clustering accuracy against the number of subjects.
+
+```{r, echo = FALSE}
+cfn = subset(clusterFrame, Setting%in%c(1,2,3))
+cfn$n = as.factor(cfn$n)
+lbn = subset(labelDat, Setting%in%c(1,2,3))
+
+ggBoxn = ggplot(data = cfn, aes(x = n, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of subjects") + 
+  geom_text(data = lbn, aes(label = Setting, x = n, y = ypos), show.legend = FALSE) + 
+  ggtitle("ARI for Simulations with varying number of subjects")
+print(ggBoxn)
+```
+
+Visualize clustering accuracy against p, the proportion of subjects with no structural contribution to error.
+
+```{r, echo = FALSE}
+cfp = subset(clusterFrame, Setting%in%c(1,41,42))
+cfp$p = as.factor(cfp$p)
+lbp = subset(labelDat, Setting%in%c(1,41,42))
+
+ggBoxp = ggplot(data = cfp, aes(x = p, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + xlab("P") + 
+  geom_text(data = lbp, aes(label = Setting, x = p, y = ypos), show.legend = FALSE) + 
+  ggtitle("ARI for Case 2 simulations with varying p")
+print(ggBoxp)
+```
+
+Visualization of the proportion of variance explained by the first PC against VXB, with other parameters held constant (except for VE, which varies with VXB).
+
+```{r, echo = FALSE}
+pcaFrame = data.frame(Setting = as.factor(pcaSetting), 
+                      PC1 = pcaResults[,1], 
+                      VXB = rep(vxb, each = reps),
+                      VZD = rep(vzd, each = reps),
+                      t = rep(t, each = reps),
+                      n = rep(n, each = reps), 
+                      p = rep(Zp, each = reps),
+                      Shape = as.factor(ifelse(rep(Zset,each=reps)==3, "Bimodal", "Unimodal")))
+
+yposPca = pcaFrame %>% 
+  group_by(Setting) %>%
+  summarize(ypos = min(PC1)-.025)
+ldPca = data.frame(Setting = yposPca$Setting, 
+                    VZD = as.factor(vzd), 
+                    VXB = as.factor(vxb), 
+                    t = as.factor(t), 
+                    n = as.factor(n),
+                    p = as.factor(Zp),
+                   Shape = ifelse(Zset==3, "Bimodal","Unimodal"),
+                    ypos = yposPca$ypos)
+
+#subset data for plotting
+pf1 = subset(pcaFrame, Setting%in%c(1,8:13,21,28:33))
+pf1$VXB = as.factor(pf1$VXB)
+###labelling not really working in this setup; for now, don't attempt it.
+ldpc1 = subset(ldPca, Setting%in%c(1,8:13,21,28:33))
+
+ggBoxPc1 = ggplot(data = pf1, aes(x = VXB, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + 
+  ggtitle("PVE by PC1 for Simulations with VZD = 0.1, default parameters")
+print(ggBoxPc1)
+
+#subset data for plotting
+pf2 = subset(pcaFrame, Setting%in%c(14:20, 34:40))
+pf2$VXB = as.factor(pf2$VXB)
+
+ggBoxPc2 = ggplot(data = pf2, aes(x = VXB, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + 
+  ggtitle("PVE by PC1 for Simulations with VZD = 0.05, default parameters")
+print(ggBoxPc2)
+```
+
+Visualize PVE by the first PC against the number of traits.
+
+```{r, echo = FALSE}
+pft = subset(pcaFrame, Setting%in%c(1,4:7,21,24:27))
+pft$t = as.factor(pft$t)
+
+ggBoxPct = ggplot(data = pft, aes(x = t, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of traits") + 
+  ggtitle("PVE by PC1 against number of traits, default parameters")
+print(ggBoxPct)
+```
+
+Visualize PVE by the first PC against the number of subjects.
+
+```{r, echo = FALSE}
+pfn = subset(pcaFrame, Setting%in%c(1:3,21:23))
+pfn$n = as.factor(pfn$n)
+
+ggBoxPcn = ggplot(data = pfn, aes(x = n, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of subjects") + 
+  ggtitle("PVE by PC1 against number of subjects, default parameters")
+print(ggBoxPcn)
+```
+
+Example plots of $\sf{X_{\beta}}$, $\sf{Z_{\delta}}$, and $\sf{\epsilon}$ for a single phenotype in some simulation settings.
+
+```{r, echo = FALSE}
+tempSim1 = prsSim(n = 2000, t = 20, bprs = .3, bst = .1, beps = .6, zStruct = 3, zStructP = .5)
+ggDat1 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
+                    Value = c(tempSim1$prs[,1],tempSim1$struct[,1],tempSim1$error[,1]))
+ggDensity1 = ggplot(data = ggDat1, aes(x = Value, fill = Source)) + 
+  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 1")
+print(ggDensity1)
+
+tempSim21 = prsSim(n = 2000, t = 20, bprs = .3, bst = .1, beps = .6, zStruct = 1, zStructP = .5)
+ggDat21 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
+                    Value = c(tempSim21$prs[,1],tempSim21$struct[,1],tempSim21$error[,1]))
+ggDensity21 = ggplot(data = ggDat21, aes(x = Value, fill = Source)) + 
+  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 21")
+print(ggDensity21)
+```
+
+

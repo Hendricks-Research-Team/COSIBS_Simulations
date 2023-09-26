@@ -35,7 +35,7 @@ prsSim = function(n, t, bprs, bst, beps, zStruct, zStructP){
   }else if(zStruct==2){
     Z = runif(n, -2, 2)
     ###null placeholder
-    chance = matrix(NA,nrow=n,ncol=t)
+    chance = rep(NA, n)
   }else if(zStruct==3){
     chance = rbinom(n, 1, zStructP)
     Z = rnorm(n,1, 0.05)
