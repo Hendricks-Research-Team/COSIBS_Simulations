@@ -1,0 +1,387 @@
+---
+title: "PRS Residual Analysis - White REGARDS Subjects"
+author: "Jack Pattee"
+date: "10/26/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(cluster)
+library(mclust)
+library(car)
+library(ggplot2)
+library(pROC)
+library(MASS)
+
+set.seed(3308004)
+
+###read in white subjects PRSs and baseline data
+dat = read.csv("~/Documents/Hendricks PRS/regards_data/trait_grs_env.csv")
+
+###some vectors for use later
+covarVec = c("Gender_x", "poly(Age_x, degree = 2)", "Alc_Use", "Income", "Smoke", "ED_Cat", "Weight")
+pgsVec = c("PGS000684", "PGS000302", "PGS000061", "PGS000301", "PGS000062", "PGS000066", "PGS000297", "PGS000011")
+outcomeVec = c("Glucose", "DBP", "Ldl", "SBP", "Cholest", "Trigly", "Height", "CAD")
+outcomeFormat = c("Glucose", "DBP","LDL", "SBP", "TC", "TG", "Height", "CAD")
+covarFormat = c("Gender","Age","Alcohol","Income","Smoking","Ed","Weight")
+
+###some formatting
+dat$Smoke[dat$Smoke==""] = NA
+dat$ED_Cat[dat$ED_Cat==""] = NA
+dat$CAD_SR_ECG[dat$CAD_SR_ECG==""] = NA
+dat$CAD = ifelse(dat$CAD_SR_ECG=="Y",1,0)
+```
+
+This document describes application of the PRS residualization approach to white subjects in the regards data. In particular, seven covariates are considered: alcohol use, gender, age, smoking, education (categorical), income, and weight. Age is modeled as a polynomial with a squared term. Eight outcomes (and their polygenic risk scores are considered): diastolic blood pressure (‘PGS000302’), glucose (‘PGS000684’), LDL (‘PGS000061’), systolic blood pressure (‘PGS000301’), total cholesterol (‘PGS000062’), triglycerides (‘PGS000066’), coronary artery disease (‘PGS000011’), and height (‘PGS000297’). All of these outcomes are continuous, with the exception of coronary artery disease. For CAD, Pearson residuals will be used.
+
+First, models will be fit with all seven covariates, and the residuals will be analyzed for structure. Then, models will be fit holding out each of the covariates in turn. All sets of residuals from leave-one-out models will be assessed via PCA and k-means clustering. For dichotomous or trichotomous covariates (smoking, alcohol use, gender), particular attention will be paid to k-means clustering.
+
+```{r, echo = FALSE}
+nmDat = dat[complete.cases(dat[,which(colnames(dat)%in%c(covarVec,pgsVec,outcomeVec))]),]
+```
+
+Subjects with missing data for any of the covariates, PGSs, or outcomes will be dropped from the analysis. This leaves us with a sample size of `r nrow(nmDat)` for a complete-case analysis.
+
+As a case study, we first estimate the glucose multiple regression using all seven covariates. Some diagnostic plots are below. The multiple regression for glucose using the PGS and all seven covariates appears to deviate moderately from the modeling assumptions of linear regression. Given that we do not want to perform inference on the regression coefficients, this does not seem like a major issue. In fact, given that we may hope the residuals to have some type of 'bimodal' structure in some cases, it may in fact be preferrable that the residuals are not perfectly normal.
+
+```{r, echo = FALSE}
+###fit models for all eight outcomes with all seven covariates and the PRS
+for(i in 1:length(outcomeVec)){
+  tempOutcome = outcomeVec[i]
+  tempFormula = as.formula(paste0(tempOutcome,"~",paste0(c(pgsVec[i],covarVec), collapse = "+")))
+  if(tempOutcome!="CAD"){
+    assign(paste0(outcomeFormat[i],"Full"), lm(tempFormula,data = nmDat))
+  }else{
+    assign(paste0(outcomeFormat[i],"Full"), glm(tempFormula,data = nmDat, family = "binomial"))
+  }
+}
+
+###fit models for all eight outcomes with all seven clinical covariates and no PRS
+for(i in 1:length(outcomeVec)){
+  tempOutcome = outcomeVec[i]
+  tempFormula = as.formula(paste0(tempOutcome,"~",paste0(covarVec, collapse = "+")))
+  if(tempOutcome!="CAD"){
+    assign(paste0(outcomeFormat[i],"NoPgs"), lm(tempFormula,data = nmDat))
+  }else{
+    assign(paste0(outcomeFormat[i],"NoPgs"), glm(tempFormula,data = nmDat, family = "binomial"))
+  }
+}
+
+###fit models for all eight outcomes holding exactly one covariate out each time
+for(i in 1:length(outcomeVec)){
+  for(j in 1:length(covarVec)){
+    tempOutcome = outcomeVec[i]
+    tempFormula = as.formula(paste0(tempOutcome,"~",paste0(c(pgsVec[i],covarVec[-j]), collapse = "+")))
+    if(tempOutcome!="CAD"){
+      assign(paste0(outcomeFormat[i],"No",covarFormat[j]), lm(tempFormula,data = nmDat))
+    }else{
+      assign(paste0(outcomeFormat[i],"No",covarFormat[j]), glm(tempFormula,data = nmDat, family = "binomial"))
+    }
+  }
+}
+
+###get residuals for the full model
+fullResids = as.data.frame(matrix(NA, nrow = nrow(nmDat), ncol = length(outcomeVec)))
+colnames(fullResids) = outcomeFormat
+for(i in 1:length(outcomeVec)){
+  tempOutcome = outcomeFormat[i]
+  tempMod = get(paste0(tempOutcome,"Full"))
+  if(tempOutcome!="CAD"){
+    fullResids[,i] = studres(tempMod)
+  }else{
+    fullResids[,i] = residuals(tempMod, type = "pearson")
+  }
+}
+fullResids = scale(fullResids)
+
+###get residuals for the hold-one-out models
+for(j in 1:length(covarVec)){
+  tempCovar = covarFormat[j]
+  tempResids = as.data.frame(matrix(NA, nrow = nrow(nmDat), ncol = length(outcomeVec)))
+  for(i in 1:length(outcomeVec)){
+    tempOutcome = outcomeFormat[i]
+    tempMod = get(paste0(tempOutcome,"No",tempCovar))
+    if(tempOutcome!="CAD"){
+      tempResids[,i] = studres(tempMod)
+    }else{
+      tempResids[,i] = residuals(tempMod, type = "pearson")
+    }
+  }
+  assign(paste0("no",tempCovar,"Resids"),tempResids)
+}
+
+hist(dat$Glucose, main = "Distribution of Glucose", xlab = "Glucose")
+plot(GlucoseFull)
+```
+
+Investigate the variance inflation factor for the seven covariates.
+
+```{r, echo = FALSE}
+print(vif(GlucoseNoPgs))
+```
+
+Calculate the coefficient of determination for each of the models to give a sense of how predictive each covariate is. For the logistic CAD models, use AUROC.
+
+```{r, echo = FALSE, warning=FALSE}
+iterVec = c("Full","Pgs",covarFormat)
+for(j in 1:length(outcomeFormat)){
+  tempOutcome = outcomeFormat[j]
+  tempRsqs = rep(NA, length(iterVec))
+  for(i in 1:length(iterVec)){
+    tempCovar = iterVec[i]
+    if(tempCovar=="Full"){
+      tempMod = get(paste0(tempOutcome,"Full"))
+    }else{
+      tempMod = get(paste0(tempOutcome,"No",tempCovar))
+    }
+    if(tempOutcome!="CAD"){
+      tempRsqs[i] = summary(tempMod)$r.squared
+    }else{
+      tempRsqs[i] = auc(nmDat$CAD,predict(tempMod))
+    }
+  }
+  assign(paste0(tempOutcome,"R2"),tempRsqs)
+}
+
+###make CAD plot manually
+ggDatCAD = cbind.data.frame(iterVec,CADR2, Index=1:length(iterVec))
+ggCAD = ggplot(data = ggDatCAD, aes(y = CADR2, x = Index, label = iterVec)) + geom_line() + geom_point() + geom_text(hjust = 1, vjust = 0) + 
+  xlab(NULL) + ylab("AUC") + theme(axis.text.x = element_blank()) + ggtitle("CAD Regression Performance")
+print(ggCAD)
+
+###plot the other seven outcomes
+for(i in 1:length(outcomeFormat)){
+  tempOutcome = outcomeFormat[i]
+  if(tempOutcome!="CAD"){
+    ggDatTemp = cbind.data.frame(iterVec, get(paste0(tempOutcome,"R2")), Index = 1:length(iterVec))
+    colnames(ggDatTemp)[2] = paste0(tempOutcome,"R2")
+    tempPlot = ggplot(data = ggDatTemp, aes(y = get(paste0(tempOutcome,"R2")), x = Index, label = iterVec)) +
+      geom_line() + geom_point() + geom_text(hjust = 1, vjust = 0) +
+      xlab(NULL) + ylab("R2") + theme(axis.text.x = element_blank()) + ggtitle(paste0(tempOutcome," Regression Performance"))
+    print(tempPlot)
+  }
+}
+```
+
+Assess clustering of the residuals from the full model using the gap statistic to determine the preferred number of clusters. Plot the first two principal components and look for structure. Residuals will be standardized before performing any modeling (to account for the different scale of the outcome variables).
+
+```{r, echo = FALSE}
+fullGap = clusGap(fullResids, FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(fullGap, main = "K-Means Gap Stat - all covariates")
+
+pcFull = prcomp(fullResids)
+plot(pcFull$x[,1],pcFull$x[,2], xlab = "PC1", ylab = "PC2", main = "All Covariates")
+```
+
+Assess clustering of the residuals from the model without gender using the gap statistic to determine the preferred number of clusters. Plot the first two principal components and look for structure. Interestingly, the results may appear to be 'better' when we do not scale the eight residual vectors before performing clustering. I believe that normalizing is still correct, but we may want to discuss
+
+```{r, echo = FALSE}
+###gap statistic: no normalization
+noGenderGap = clusGap(noGenderResids, FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noGenderGap, main = "K-Means Gap Stat - no gender, no normalization")
+
+###gap statistic: not normalized
+noGenderGapNorm = clusGap(scale(noGenderResids), FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noGenderGapNorm, main = "K-Means Gap Stat - no gender, normalized")
+
+pcNg = prcomp(noGenderResids)
+ggNg = as.data.frame(pcNg$x)
+ggNg$Gender = nmDat$Gender_x
+ggScatterNg = ggplot(ggNg, aes(x = PC1, y = PC2, color = Gender)) + geom_point() + ggtitle("No gender, no normalization")
+print(ggScatterNg)
+
+boxplot(ggNg$PC2~ggNg$Gender, xlab = "Gender", ylab = "PC2", main = "No gender, not normalized")
+
+twoCenterNg = kmeans(noGenderResids, centers = 2, nstart = 3)
+print(paste0("Adjusted rand index, no normalization: ", round(adjustedRandIndex(twoCenterNg$cluster, nmDat$Gender_x), 3)))
+print("No normalization, no gender table of clustering results")
+print(table(twoCenterNg$cluster, nmDat$Gender_x))
+
+pcNgNorm = prcomp(scale(noGenderResids))
+ggNgNorm = as.data.frame(pcNgNorm$x)
+ggNgNorm$Gender = nmDat$Gender_x
+ggScatterNgNorm = ggplot(ggNgNorm, aes(x = PC1, y = PC2, color = Gender)) + geom_point() + ggtitle("No gender, normalized")
+print(ggScatterNgNorm)
+
+boxplot(ggNgNorm$PC2~ggNgNorm$Gender, xlab = "Gender", ylab = "PC2", main = "No gender, normalized")
+
+twoCenterNgNorm = kmeans(scale(noGenderResids), centers = 2, nstart = 3)
+print(paste0("Adjusted rand index, normalized: ", round(adjustedRandIndex(twoCenterNgNorm$cluster, nmDat$Gender_x), 3)))
+print("Normalized, no gender table of clustering results")
+print(table(twoCenterNgNorm$cluster, nmDat$Gender_x))
+```
+
+Assess residuals from the model without smoking. Again, we have stronger evidence of two or three clusters (which likely seems preferred) without normalizing.
+
+```{r, echo = FALSE}
+###gap statistic: not normalized
+noSmokingGapNorm = clusGap(scale(noSmokingResids), FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noSmokingGapNorm, main = "K-Means Gap Stat - no smoking, normalized")
+
+noSmokingGap = clusGap(noSmokingResids, FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noSmokingGap, main = "K-Means Gap Stat - no smoking, no normalization")
+
+pcNs = prcomp(noSmokingResids)
+ggNs = as.data.frame(pcNs$x)
+ggNs$Smoking = nmDat$Smoke
+ggScatterNs = ggplot(ggNs, aes(x = PC1, y = PC2, color = Smoking)) + geom_point() + ggtitle("No smoking, no normalization")
+print(ggScatterNs)
+
+boxplot(ggNs$PC1~ggNs$Smoking, xlab = "Smoking", ylab = "PC1", main = "No smoking, not normalized")
+boxplot(ggNs$PC2~ggNs$Smoking, xlab = "Smoking", ylab = "PC2", main = "No smoking, not normalized")
+
+threeCenterNs = kmeans(noSmokingResids, centers = 3, nstart = 3)
+print(paste0("Adjusted rand index, no normalization: ", round(adjustedRandIndex(threeCenterNs$cluster, nmDat$Smoke), 3)))
+print("No normalization, no smoking table of clustering results")
+print(table(threeCenterNs$cluster, nmDat$Smoke))
+
+
+pcNsNorm = prcomp(scale(noSmokingResids))
+ggNsNorm = as.data.frame(pcNsNorm$x)
+ggNsNorm$Smoking = nmDat$Smoke
+ggScatterNsNorm = ggplot(ggNsNorm, aes(x = PC1, y = PC2, color = Smoking)) + geom_point() + ggtitle("No smoking, normalized")
+print(ggScatterNsNorm)
+
+boxplot(ggNsNorm$PC1~ggNsNorm$Smoking, xlab = "Smoking", ylab = "PC1", main = "No smoking, normalized")
+boxplot(ggNsNorm$PC2~ggNsNorm$Smoking, xlab = "Smoking", ylab = "PC2", main = "No smoking, normalized")
+
+threeCenterNsNorm = kmeans(scale(noSmokingResids), centers = 3, nstart = 3)
+print(paste0("Adjusted rand index, normalized: ", round(adjustedRandIndex(threeCenterNsNorm$cluster, nmDat$Smoke), 3)))
+print("normalized, no smoking table of clustering results")
+print(table(threeCenterNsNorm$cluster, nmDat$Smoke))
+```
+
+
+Assess residuals from the model without alcohol.
+```{r, echo = FALSE}
+###gap statistic: not normalized
+noAlcoholGapNorm = clusGap(scale(noAlcoholResids), FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noAlcoholGapNorm, main = "K-Means Gap Stat - no alcohol, normalized")
+
+noAlcoholGap = clusGap(noAlcoholResids, FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noAlcoholGap, main = "K-Means Gap Stat - no alcohol, no normalization")
+
+pcNa = prcomp(noAlcoholResids)
+ggNa = as.data.frame(pcNa$x)
+ggNa$Alcohol = nmDat$Alc_Use
+ggScatterNa = ggplot(ggNa, aes(x = PC1, y = PC2, color = Alcohol)) + geom_point() + ggtitle("No alcohol, no normalization")
+print(ggScatterNa)
+
+boxplot(ggNa$PC1~ggNa$Alcohol, xlab = "Alcohol", ylab = "PC1", main = "No alcohol, not normalized")
+boxplot(ggNa$PC2~ggNa$Alcohol, xlab = "Alcohol", ylab = "PC2", main = "No alcohol, not normalized")
+
+threeCenterNa = kmeans(noAlcoholResids, centers = 3, nstart = 3)
+print(paste0("Adjusted rand index, no normalization: ", round(adjustedRandIndex(threeCenterNa$cluster, nmDat$Alc_Use), 3)))
+print("No normalization, no alcohol table of clustering results")
+print(table(threeCenterNa$cluster, nmDat$Alc_Use))
+
+
+pcNaNorm = prcomp(scale(noAlcoholResids))
+ggNaNorm = as.data.frame(pcNaNorm$x)
+ggNaNorm$Alcohol = nmDat$Alc_Use
+ggScatterNaNorm = ggplot(ggNaNorm, aes(x = PC1, y = PC2, color = Alcohol)) + geom_point() + ggtitle("No alcohol, normalized")
+print(ggScatterNaNorm)
+
+boxplot(ggNaNorm$PC1~ggNaNorm$Alcohol, xlab = "Alcohol", ylab = "PC1", main = "No alcohol, normalized")
+boxplot(ggNaNorm$PC2~ggNaNorm$Alcohol, xlab = "Alcohol", ylab = "PC2", main = "No alcohol, normalized")
+
+threeCenterNaNorm = kmeans(scale(noAlcoholResids), centers = 3, nstart = 3)
+print(paste0("Adjusted rand index, normalized: ", round(adjustedRandIndex(threeCenterNaNorm$cluster, nmDat$Alc_Use), 3)))
+print("normalized, no alcohol table of clustering results")
+print(table(threeCenterNaNorm$cluster, nmDat$Alc_Use))
+```
+
+Assess residuals from the model without weight. There appears to be an oddly large number of duplicate values for weight - this warrants further investigation.
+
+```{r, echo = FALSE}
+###gap statistic: not normalized
+noWeightGapNorm = clusGap(scale(noWeightResids), FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noWeightGapNorm, main = "K-Means Gap Stat - no weight, normalized")
+
+noWeightGap = clusGap(noWeightResids, FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noWeightGap, main = "K-Means Gap Stat - no weight, no normalization")
+
+pcNw = prcomp(noWeightResids)
+ggNw = as.data.frame(pcNw$x)
+ggNw$Weight = nmDat$Weight
+ggScatterNw = ggplot(ggNw, aes(x = PC1, y = PC2, color = Weight)) + geom_point() + ggtitle("No weight, no normalization")
+print(ggScatterNw)
+
+plot(ggNw$PC1,ggNw$Weight, xlab = "PC1", ylab = "Weight", main = "No weight, not normalized")
+plot(ggNw$PC2,ggNw$Weight, xlab = "PC2", ylab = "Weight", main = "No weight, not normalized")
+
+pcNwNorm = prcomp(scale(noWeightResids))
+ggNwNorm = as.data.frame(pcNwNorm$x)
+ggNwNorm$Weight = nmDat$Weight
+ggScatterNwNorm = ggplot(ggNwNorm, aes(x = PC1, y = PC2, color = Weight)) + geom_point() + ggtitle("No weight, normalized")
+print(ggScatterNwNorm)
+
+plot(ggNwNorm$PC1,ggNwNorm$Weight, xlab = "PC1", ylab = "Weight", main = "No weight, normalized")
+plot(ggNwNorm$PC2,ggNwNorm$Weight, xlab = "PC2", ylab = "Weight", main = "No weight, normalized")
+
+```
+
+Assess residuals from the model without income. Look at only normalized results for now. There appears to be very few unique values for income.
+
+```{r, echo = FALSE}
+###gap statistic: not normalized
+noIncomeGapNorm = clusGap(scale(noIncomeResids), FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noIncomeGapNorm, main = "K-Means Gap Stat - no income, normalized")
+
+pcNiNorm = prcomp(scale(noWeightResids))
+ggNiNorm = as.data.frame(pcNiNorm$x)
+ggNiNorm$Income = nmDat$Income
+ggScatterNiNorm = ggplot(ggNiNorm, aes(x = PC1, y = PC2, color = Income)) + geom_point() + ggtitle("No income, normalized")
+print(ggScatterNiNorm)
+
+plot(ggNiNorm$PC1,ggNiNorm$Income, xlab = "PC1", ylab = "Income", main = "No income, normalized")
+legend(legend = paste0("cor: ",round(cor(ggNiNorm$PC1,ggNiNorm$Income), 2)), "topright")
+plot(ggNiNorm$PC2,ggNiNorm$Income, xlab = "PC2", ylab = "Income", main = "No income, normalized")
+legend(legend = paste0("cor: ",round(cor(ggNiNorm$PC2,ggNiNorm$Income), 2)), "topright")
+
+boxplot(ggNiNorm$PC1~as.factor(ggNiNorm$Income), xlab = "Income", ylab = "PC1", main = "No income, normalized")
+boxplot(ggNiNorm$PC2~as.factor(ggNiNorm$Income), xlab = "Income", ylab = "PC2", main = "No income, normalized")
+```
+
+Assess residuals from the model without age. Look at only normalized results for now.
+
+```{r, echo = FALSE}
+##gap statistic: not normalized
+noAgeGapNorm = clusGap(scale(noAgeResids), FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noAgeGapNorm, main = "K-Means Gap Stat - no age, normalized")
+
+pcNageNorm = prcomp(scale(noAgeResids))
+ggNageNorm = as.data.frame(pcNageNorm$x)
+ggNageNorm$Age = nmDat$Age_x
+ggScatterNageNorm = ggplot(ggNageNorm, aes(x = PC1, y = PC2, color = Age)) + geom_point() + ggtitle("No age, normalized")
+print(ggScatterNageNorm)
+
+plot(ggNageNorm$PC1,ggNageNorm$Age, xlab = "PC1", ylab = "Age", main = "No age, normalized")
+legend(legend = paste0("cor: ",round(cor(ggNageNorm$PC1,ggNageNorm$Age), 2)), "topright")
+plot(ggNageNorm$PC2,ggNageNorm$Age, xlab = "PC2", ylab = "Age", main = "No age, normalized")
+legend(legend = paste0("cor: ",round(cor(ggNageNorm$PC2,ggNageNorm$Age), 2)), "topright")
+```
+
+Assess residuals from the model without education. Look at only normalized results for now. Compare 4-center k-means clustering to the four education categories with the adjusted Rand index.
+
+```{r, echo = FALSE}
+##gap statistic: not normalized
+noEdGapNorm = clusGap(scale(noEdResids), FUN = kmeans, nstart = 10, K.max = 10, B = 10)
+plot(noEdGapNorm, main = "K-Means Gap Stat - no education, normalized")
+
+pcNeNorm = prcomp(scale(noEdResids))
+ggNeNorm = as.data.frame(pcNeNorm$x)
+ggNeNorm$Education = nmDat$ED_Cat
+ggScatterNeNorm = ggplot(ggNeNorm, aes(x = PC1, y = PC2, color = Education)) + geom_point() + ggtitle("No education, normalized")
+print(ggScatterNeNorm)
+
+fourCenterNeNorm = kmeans(scale(noEdResids), centers = 4, nstart = 3)
+print(paste0("Adjusted rand index, normalized: ", round(adjustedRandIndex(fourCenterNeNorm$cluster, nmDat$ED_Cat), 3)))
+print("normalized, no education table of clustering results")
+print(table(fourCenterNeNorm$cluster, nmDat$ED_Cat))
+
+boxplot(ggNeNorm$PC1~as.factor(ggNeNorm$Education), xlab = NULL, ylab = "PC1", main = "No education, normalized", las = 2)
+boxplot(ggNeNorm$PC2~as.factor(ggNeNorm$Education), xlab = NULL, ylab = "PC2", main = "No education, normalized", las = 2)
+```

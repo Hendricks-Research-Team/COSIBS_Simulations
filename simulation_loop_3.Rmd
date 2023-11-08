@@ -1,0 +1,383 @@
+---
+title: "PRS Simulation: 3"
+author: "Jack Pattee"
+date: "10/25/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(knitr)
+library(mclust)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+
+source("~/Documents/Hendricks PRS/Simulation Code/simulation_functions.R")
+
+###set random seed
+set.seed(3308004)
+```
+
+This RMarkdown executes simulations as described in 'Hendricks Report 2' (Sept 11, 2023). The structure of the simulation is described in that document; the inputs to the simulation are described here, the simulations themselves conducted, and the accuracy of the simulations is assessed.
+
+Table of abbreviations used in the report:
+
+| Abbreviation | Meaning |
+| -------------|---------|
+| VXB | Proportion of phenotype variance explained by known covariates |
+| VZD | Proportion of phenotype variance explained by structural error |
+| VE | Proportion of phenotype variance explained by random error |
+| P | Proportion of subjects with nonzero structural error contribution to phenotype |
+| Q | Proportion of traits that contribute to structural error |
+| PVE | Proportion of variance explained (by) |
+| Z | The structural phenotypic error |
+| t | The number of traits | 
+
+This report can be considered an extension of 'simulation_loop_2.Rmd' that implements some additional simulation scenarios. There are not universal 'baselines' as there were in simulation report two. Some parameters have universal defaults: the sample size defaults to **n=2000**, the proportion of subjects in each group for the case with bimodal structural error is **p=0.5**, and the default proportion of traits that contribute to structural error is **q = 1**. The two goals of this report are: extend the simulations so the baseline heritability is: VXB = 0.1, VZD = 0.01, and VE = 0.89 and the baseline number of traits is 50. The simulation settings are described in table 1.
+
+In the case of Z distributed according to case 2, the environmental error is bimodal. In this case, the 'effectiveness' will be assessed according to accuracy of k-means clustering. Specifically, k-means clusters will be estimated with two cluster centers, and cluster quality will be assessed using the adjusted Rand index. In the case of Z distributed according to case 1, the structural error is unimodal. In both case 1 and case 2, the effectiveness of the method will be assessed as the proportion of variation in environmental error explained by each of the first five principal components in single linear regression. Each simulation is run for 200 replications.
+
+
+```{r, echo = FALSE}
+#set-up simulation variables to iterate over
+simSettings = read.csv("~/Documents/Hendricks PRS/simulation_3_settings.csv")
+simSettings$Setting = c(1:nrow(simSettings))
+simSettings = simSettings[,c(ncol(simSettings),1:(ncol(simSettings)-1))]
+kable(simSettings, caption = "Table 1: Simulation Settings")
+
+###make vectors of all the columns in the simSettings table (to avoid having to rewrite too much code)
+n = simSettings$n
+t = simSettings$t
+vxb = simSettings$vxb
+vzd = simSettings$vzd
+ve = simSettings$ve
+Zset = simSettings$Zset
+Zp = simSettings$Zp
+q = simSettings$q
+
+reps = 200
+
+clusterAccs = NULL
+pcaResults = NULL
+clusterSetting = NULL
+pcaSetting = NULL
+
+for(i in 1:nrow(simSettings)){
+  for(j in 1:reps){
+    ####simulate phenotypes, PRSs
+    ###arguments:
+    #unimodal / bimodal
+    #sample size n
+    #number of polygenic risk scores t
+    #proportion of variance explainable by PRS
+    #proportion of structural variance
+    #proportion of random variance
+    #distribution of structural error Z term
+    simData = prsSim(n = simSettings$n[i], 
+                     t = simSettings$t[i], 
+                     bprs = simSettings$vxb[i], 
+                     bst = simSettings$vzd[i], 
+                     beps = simSettings$ve[i], 
+                     zStruct = simSettings$Zset[i], 
+                     zStructP = simSettings$Zp[i], 
+                     q = simSettings$q[i])
+  
+    ###residuals from univariate regression of simulated phenotype on PRS
+    resids = getResiduals(simData$phenos, simData$prs)
+  
+    if(simSettings$Zset[i]==3){
+      ###if we have a bimodal distribution of structural error, report clustering accuracy
+        clusterAccs = c(clusterAccs, clustering(resids, simData$clust, method = "kmeans"))
+        clusterSetting = c(clusterSetting, i)
+      }
+    ##assess PCA whether we have unimodal or bimodal structural error
+    pcaResults = rbind(pcaResults,pcaModeling(resids, simData$Z))
+    pcaSetting = c(pcaSetting,i)
+
+  }
+}
+```
+
+Visualizations of clustering accuracy against VXB, with other parameters held constant (except for VE, which varies with VXB). Boxplots of clustering accuracy by simulation setting. The number of traits considered in all cases is 50, and the default distribution of Z is bimodal (i.e., 'Case 2' simulation setting) with p = 0.5
+
+```{r, echo = FALSE, warnings = FALSE}
+###NOTE: after implementing some simulation settings where clustering is difficult, we are getting some warnings in k-means:
+### Warning: Quick-TRANSfer stage steps exceeded maximum (= 100000)
+###suppressing warnings so output looks better.
+
+###define clustering accuracy dataset for plotting
+clusterFrame = data.frame(Setting = as.factor(clusterSetting), 
+                          Accuracy = clusterAccs, 
+                          VXB = rep(vxb, each = reps)[rep(Zset,each=reps)==3],
+                          t = rep(t, each = reps)[rep(Zset,each=reps)==3],
+                          n = rep(n, each = reps)[rep(Zset,each=reps)==3], 
+                          p = rep(Zp, each = reps)[rep(Zset,each=reps)==3],
+                          q = rep(q, each = reps)[rep(Zset,each=reps)==3])
+ypos = clusterFrame %>% 
+  group_by(Setting) %>%
+  summarize(ypos = min(Accuracy)-.025)
+labelDat = data.frame(Setting = ypos$Setting, 
+                      VZD = as.factor(vzd[Zset==3]), 
+                      VXB = as.factor(vxb[Zset==3]), 
+                      t = as.factor(t[Zset==3]), 
+                      n = as.factor(n[Zset==3]),
+                      p = as.factor(Zp[Zset==3]),
+                      q = as.factor(q[Zset==3]),
+                      ypos = ypos$ypos)
+
+#subset data for plotting
+cf1 = subset(clusterFrame, Setting%in%c(28:35))
+cf1$VXB = as.factor(cf1$VXB)
+lb1 = subset(labelDat, Setting%in%c(28:35))
+
+#subset data for plotting
+cf2 = subset(clusterFrame, Setting%in%36:43)
+cf2$VXB = as.factor(cf2$VXB)
+lb2 = subset(labelDat, Setting%in%36:43)
+
+#subset data for plotting
+cf3 = subset(clusterFrame, Setting%in%c(25, 44:50))
+cf3$VXB = as.factor(cf3$VXB)
+lb3 = subset(labelDat, Setting%in%c(25, 44:50))
+
+# ggBox1 = ggplot(data = cf1, aes(x = VXB, y = Accuracy)) + 
+#   geom_boxplot() + theme_bw() + 
+#   geom_text(data = lb1, aes(label = Setting,x = VXB, y = ypos), show.legend = FALSE) + 
+#   coord_cartesian(ylim = c(-.1,1)) + 
+#   ggtitle("Clustering Accuracy for Simulations with VZD = 0.1") + ylab("Adjusted Rand Index") + xlab("Proportion of variance explained by covariates")
+# print(ggBox1)
+# 
+# ggBox2 = ggplot(data = cf2, aes(x = VXB, y = Accuracy)) + 
+#   geom_boxplot() + theme_bw() + 
+#   geom_text(data = lb2, aes(label = Setting,x = VXB, y = ypos), show.legend = FALSE) + 
+#   coord_cartesian(ylim = c(-.1,1)) + 
+#   ggtitle("ARI for Simulations with VZD = 0.05") + ylab("Adjusted Rand Index") + xlab("Proportion of variance explained by covariates")
+# print(ggBox2)
+# 
+# ggBox3 = ggplot(data = cf3, aes(x = VXB, y = Accuracy)) + 
+#   geom_boxplot() + theme_bw() + 
+#   geom_text(data = lb3, aes(label = Setting,x = VXB, y = ypos), show.legend = FALSE) + 
+#   coord_cartesian(ylim = c(-.1,1)) + 
+#   ggtitle("ARI for Simulations with VZD = 0.01") + ylab("Adjusted Rand Index") + xlab("Proportion of variance explained by covariates")
+# print(ggBox3)
+
+
+cfBoth = rbind.data.frame(cbind.data.frame(cf1, VZD = as.factor(rep(.1,nrow(cf1)))),
+                          cbind.data.frame(cf2, VZD = as.factor(rep(.05,nrow(cf2)))),
+                          cbind.data.frame(cf3, VZD = as.factor(rep(.01,nrow(cf2)))))
+labelBoth = subset(labelDat, Setting%in%c(25, 28:50))
+
+ggBoxBoth = ggplot(data = cfBoth, aes(x = VXB, y = Accuracy, color = VZD)) + 
+  geom_boxplot(position = position_dodge(0)) + theme_bw() +
+  #geom_text(data = labelBoth, aes(label = Setting,x = VXB, y = ypos, color = VZD), show.legend = FALSE) + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ylab("Adjusted Rand Index") + xlab("Proportion of variance explained by covariates")
+print(ggBoxBoth)
+```
+
+Visualize clustering accuracy against the number of traits. For all simulations represented in this plot, the default heritability is: VXB = 0.1, VZD = 0.01, VE = .89.
+
+```{r, echo = FALSE}
+cft = subset(clusterFrame, Setting%in%c(1,4,5,6,7))
+cft$t = as.factor(cft$t)
+lbt = subset(labelDat, Setting%in%c(1,4,5,6,7))
+
+ggBoxt = ggplot(data = cft, aes(x = t, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of traits") +  ylab("Adjusted Rand Index") + 
+  #geom_text(data = lbt, aes(label = Setting, x = t, y = ypos), show.legend = FALSE) + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("Clustering Accuracy for Simulations with Varying Number of Traits")
+print(ggBoxt)
+```
+
+Visualize clustering accuracy against the number of subjects. There are two sets of simulation settings described here: one with 20 traits and one with 50 traits. In all simulations plotted here, the default heritability is: VXB = 0.1, VZD = 0.01, VE = .89.
+
+```{r, echo = FALSE}
+cfn1 = subset(clusterFrame, Setting%in%c(1,2,3))
+cfn1$n = as.factor(cfn1$n)
+cfn1$t = as.factor(cfn1$t)
+lbn1 = subset(labelDat, Setting%in%c(1,2,3))
+
+cfn2 = subset(clusterFrame, Setting%in%c(25,26,27))
+cfn2$n = as.factor(cfn2$n)
+cfn2$t = as.factor(cfn2$t)
+lbn2 = subset(labelDat, Setting%in%c(25,26,27))
+
+cfnBoth = rbind.data.frame(cfn1,cfn2)
+lbnBoth =  subset(labelDat, Setting%in%c(1:3, 25:27))
+
+ggBoxn = ggplot(data = cfnBoth, aes(x = n, y = Accuracy, color = t)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of subjects") + ylab("Adjusted Rand Index") +
+  #geom_text(data = lbnBoth, aes(label = Setting, x = n, y = ypos), show.legend = FALSE) + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("Clustering Accuracy for Simulations with Varying Number of Subjects") + labs(color = "Number\nof traits")
+print(ggBoxn)
+```
+
+Visualize clustering accuracy against p, the proportion of subjects with contribution to structural error. There are two sets of simulation settings considered here: one with 20 traits and one with 50 traits. In all simulations plotted here, the default heritability is: VXB = 0.1, VZD = 0.01, VE = .89.
+
+```{r, echo = FALSE}
+cfp1 = subset(clusterFrame, Setting%in%c(1,15,16))
+cfp1$p = as.factor(cfp1$p)
+cfp1$t = as.factor(cfp1$t)
+lbp1 = subset(labelDat, Setting%in%c(1,15, 16))
+
+cfp2 = subset(clusterFrame, Setting%in%c(25,77,78))
+cfp2$p = as.factor(cfp2$p)
+cfp2$t = as.factor(cfp2$t)
+lbp2 = subset(labelDat, Setting%in%c(25,77,78))
+
+cfpBoth = rbind.data.frame(cfp1,cfp2)
+
+ggBoxp = ggplot(data = cfpBoth, aes(x = p, y = Accuracy, color = t)) + 
+  geom_boxplot() + theme_bw() + xlab("q") + ylab("Adjusted Rand Index") + 
+  #geom_text(data = lbp, aes(label = Setting, x = p, y = ypos), show.legend = FALSE) + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("Clustering Accuracy for Simulations with Varying p") + labs(color = "Number\nof traits")
+print(ggBoxp)
+```
+
+Visualize clustering accuracy against q, the proportion of traits with contribution to structural error. There are two sets of simulation settings considered here: one with 20 traits and one with 50 traits. In all simulations plotted here, the default heritability is: VXB = 0.1, VZD = 0.01, VE = .89.
+
+```{r, echo = FALSE}
+cfq1 = subset(clusterFrame, Setting%in%c(1,17:20))
+cfq1$q = as.factor(cfq1$q)
+cfq1$t = as.factor(cfq1$t)
+lbq1 = subset(labelDat, Setting%in%c(1,17:20))
+
+cfq2 = subset(clusterFrame, Setting%in%c(25,79:82))
+cfq2$q = as.factor(cfq2$q)
+cfq2$t = as.factor(cfq2$t)
+lbq2 = subset(labelDat, Setting%in%c(25,79:82))
+
+cfqBoth = rbind.data.frame(cfq1,cfq2)
+
+ggBoxq = ggplot(data = cfqBoth, aes(x = q, y = Accuracy, color = t)) + 
+  geom_boxplot() + theme_bw() + xlab("Proportion of phenotypes contributing to structural error") + ylab("Adjusted Rand Index") + 
+  #geom_text(data = lbq, aes(label = Setting, x = q, y = ypos), show.legend = FALSE) + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("Clustering Accuracy for Simulations with Varying q") + labs(color = "Number\nof traits")
+print(ggBoxq)
+```
+
+Visualization of the proportion of variance explained by the first PC against VXB, with other parameters held constant (except for VE, which varies with VXB). The number of traits considered in all cases is 50.
+
+```{r, echo = FALSE}
+pcaFrame = data.frame(Setting = as.factor(pcaSetting), 
+                      PC1 = pcaResults[,1], 
+                      VXB = rep(vxb, each = reps),
+                      VZD = rep(vzd, each = reps),
+                      t = rep(t, each = reps),
+                      n = rep(n, each = reps), 
+                      p = rep(Zp, each = reps),
+                      q = rep(q, each = reps),
+                      Shape = as.factor(ifelse(rep(Zset,each=reps)==3, "Bimodal", "Unimodal")))
+
+yposPca = pcaFrame %>% 
+  group_by(Setting) %>%
+  summarize(ypos = min(PC1)-.025)
+ldPca = data.frame(Setting = yposPca$Setting, 
+                    VZD = as.factor(vzd), 
+                    VXB = as.factor(vxb), 
+                    t = as.factor(t), 
+                    n = as.factor(n),
+                    p = as.factor(Zp),
+                   q = as.factor(q),
+                   Shape = ifelse(Zset==3, "Bimodal","Unimodal"),
+                    ypos = yposPca$ypos)
+
+#subset data for plotting
+pf1 = subset(pcaFrame, Setting%in%c(28:35,54:61))
+pf1$VXB = as.factor(pf1$VXB)
+###labelling not really working in this setup; for now, don't attempt it.
+#ldpc1 = subset(ldPca, Setting%in%c(1,8:13,21,28:33))
+
+ggBoxPc1 = ggplot(data = pf1, aes(x = VXB, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + 
+  ggtitle("PVE by PC1 for Simulations with VZD = 0.1, default parameters") + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  xlab("Proportion of variance explained by covariates") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPc1)
+
+#subset data for plotting
+pf2 = subset(pcaFrame, Setting%in%c(36:43, 62:69))
+pf2$VXB = as.factor(pf2$VXB)
+
+ggBoxPc2 = ggplot(data = pf2, aes(x = VXB, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + 
+  ggtitle("PVE by PC1 for Simulations with VZD = 0.05, default parameters") + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  xlab("Proportion of variance explained by covariates") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPc2)
+
+#subset data for plotting
+pf3 = subset(pcaFrame, Setting%in%c(25,44:50,51,70:76))
+pf3$VXB = as.factor(pf3$VXB)
+
+ggBoxPc3 = ggplot(data = pf3, aes(x = VXB, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + 
+  ggtitle("PVE by PC1 for Simulations with VZD = 0.01, default parameters") + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  xlab("Proportion of variance explained by covariates") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPc3)
+```
+
+Visualize PVE by the first PC against the number of traits. For all simulations represented in this plot, the default heritability is: VXB = 0.1, VZD = 0.01, VE = .89.
+
+```{r, echo = FALSE}
+pft = subset(pcaFrame, Setting%in%c(1, 4:7, 8, 11:14))
+pft$t = as.factor(pft$t)
+
+ggBoxPct = ggplot(data = pft, aes(x = t, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of traits") + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("PVE by PC1 against number of traits, default parameters") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPct)
+```
+
+Visualize PVE by the first PC against the number of subjects. Two plots are presented here, for two sets of simulation settings: one with 20 traits and one with 50 traits. In all simulations plotted here, the default heritability is: VXB = 0.1, VZD = 0.01, VE = .89.
+
+```{r, echo = FALSE}
+pfn1 = subset(pcaFrame, Setting%in%c(1:3,8:10))
+pfn1$n = as.factor(pfn1$n)
+
+ggBoxPcn1 = ggplot(data = pfn1, aes(x = n, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of subjects") + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("PVE by PC1 against number of subjects; t = 20") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPcn1)
+
+pfn2 = subset(pcaFrame, Setting%in%c(25:27,51:53))
+pfn2$n = as.factor(pfn2$n)
+
+ggBoxPcn2 = ggplot(data = pfn2, aes(x = n, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + xlab("Number of subjects") + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("PVE by PC1 against number of subjects; t = 20") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPcn2)
+```
+
+Visualize PVE by the first PC against q. Two plots are presented here, for two sets of simulation settings: one with 20 traits and one with 50 traits. In all simulations plotted here, the default heritability is: VXB = 0.1, VZD = 0.01, VE = .89.
+
+```{r, echo = FALSE}
+pfq1 = subset(pcaFrame, Setting%in%c(1,8,17:24))
+pfq1$q = as.factor(pfq1$q)
+
+ggBoxPcq1 = ggplot(data = pfq1, aes(x = q, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + xlab("Proportion of phenotypes contributing to structural error") + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("PVE by PC1 against q; t = 20") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPcq1)
+
+pfq2 = subset(pcaFrame, Setting%in%c(25,51,79:86))
+pfq2$q = as.factor(pfq2$q)
+
+ggBoxPcq2 = ggplot(data = pfq2, aes(x = q, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + xlab("Proportion of phenotypes contributing to structural error") + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("PVE by PC1 against q; t = 50") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPcq2)
+```
