@@ -16,11 +16,19 @@ library(ggplot2)
 library(pROC)
 library(MASS)
 library(mice)
+library(corrr)
+library(colorspace)
 
 set.seed(3308004)
 
 ###read in white and black REGARDS subjects covariate data.
 dat = read.csv("~/Documents/Hendricks PRS/regards_data/baseline.csv")
+
+###read in PRS data for white subjects
+whitePrs = read.csv("~/Documents/Hendricks PRS/regards_data/trait_grs_env.csv")
+
+###read in PRS data for black subjects
+blackPrs = read.csv("~/Documents/Hendricks PRS/regards_data/grs_REGARDS_afr.csv")
 
 ###define outcomes
 outcomeVec = c("EGFR_CKDEPI", "lvh_main", "Afib_SR_ECG", "Diab_SRMed_glu", "Lipidemia_meds_labs", "MI_SR_ECG","CAD_SR_ECG", "insulin", "Creatinine_urine", "Albumin_urine", "Cysc", "Crp", "Trigly", "Glucose", "Ldl", "Hdl", "DBP", "SBP", "Cholest", "Heartrate", "Stroke_SR", "CESD")
@@ -71,8 +79,21 @@ names(dispVec) = NULL
 kable(data.frame(Covariate = nameVec, MissingProp = round(dispVec,3)))
 
 covarVec = covarVec[covarVec!="Income"]
+```
 
+PRS scores will be included as a covariate for traits where it is available. PRSs are available in white and black subjects for the following traits: eGFR (PGS000303), CAD (PGS000011), albumin (PGS000669), C-reactive protein (PGS000314), triglycerides (PGS000066), LDL (PGS000061), DBP (PGS000302), SBP (PGS000301), TC (PGS000062), and heart rate (PGS000300).
+
+Note: the PGS for glucose (PGS000684) is present for white subjects but not black subjects.
+
+```{r, echo = FALSE}
 nmDat = dat[complete.cases(dat[,colnames(dat)%in%c(outcomeVec,covarVec)]),]
+
+pgsList = c("PGS000303", "PGS000011", "PGS000669", "PGS000314", "PGS000066", "PGS000061", "PGS000302", "PGS000301", "PGS000062", "PGS000300")
+pgsOutcomeList = c("EGFR_CKDEPI", "CAD_SR_ECG", "Albumin_urine", "Crp", "Trigly", "Ldl", "DBP", "SBP", "Cholest", "Heartrate")
+
+prsDat = rbind.data.frame(blackPrs[,match(c("IID",pgsList),colnames(blackPrs))],whitePrs[,match(c("IID",pgsList),colnames(whitePrs))])
+
+nmDat = merge(nmDat,prsDat, by = "IID")
 ```
 
 The complete case analysis consists of `r nrow(nmDat)` subjects.
@@ -94,6 +115,18 @@ for(i in 1:length(binOutcomeVec)){
 }
 ```
 
+Heatmap of correlation between outcome variables.
+
+```{r, echo = FALSE}
+corMat = correlate(nmDat[,colnames(nmDat)%in%outcomeVec], method = "pearson")
+corPlotDat = stretch(corMat)
+
+corPlot = ggplot(data = corPlotDat, aes(x,y, fill = r)) + geom_tile() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  scale_fill_continuous_divergingx(palette = "RdBu", mid = 0)
+print(corPlot)
+```
+
 ```{r, echo = FALSE}
 covarFormat = c("Alcohol","Gender","Age","Smoking","Education","Weight","Race")
 outcomeFormat = c("eGFR","LVH","AFib","Diabetes","Lipidemia","MI","CAD","Creatinine","Albumin","CysC","CRP","TG","Glucose","LDL","HDL", "DBP","SBP","TC","HR","Stroke")
@@ -106,7 +139,14 @@ covarVec[covarVec=="Age_x"] = "poly(Age_x, degree = 2)"
 ###fit full models (with all covariates) for all outcomes
 for(i in 1:length(outcomeVec)){
   tempOutcome = outcomeVec[i]
-  tempFormula = as.formula(paste0(tempOutcome,"~",paste0(covarVec, collapse = "+")))
+  
+  ###regress against PGS if one is available
+  if(!tempOutcome%in%pgsOutcomeList){
+    tempFormula = as.formula(paste0(tempOutcome,"~",paste0(covarVec, collapse = "+")))
+  }else{
+    tempFormula = as.formula(paste0(tempOutcome,"~",paste0(c(covarVec,pgsList[pgsOutcomeList==tempOutcome]), collapse = "+")))
+  }
+  
   if(!tempOutcome%in%binOutcomeVec){
     assign(paste0(outcomeFormat[i],"Full"), lm(tempFormula,data = nmDat))
   }else{
@@ -118,7 +158,14 @@ for(i in 1:length(outcomeVec)){
 for(i in 1:length(outcomeVec)){
   for(j in 1:length(covarVec)){
     tempOutcome = outcomeVec[i]
-    tempFormula = as.formula(paste0(tempOutcome,"~",paste0(covarVec[-j], collapse = "+")))
+    
+    ###regress against PGS if one is available
+    if(!tempOutcome%in%pgsOutcomeList){
+      tempFormula = as.formula(paste0(tempOutcome,"~",paste0(covarVec[-j], collapse = "+")))
+    }else{
+      tempFormula = as.formula(paste0(tempOutcome,"~",paste0(c(covarVec[-j],pgsList[pgsOutcomeList==tempOutcome]), collapse = "+")))
+    }
+    
     if(!tempOutcome%in%binOutcomeVec){
       assign(paste0(outcomeFormat[i],"No",covarFormat[j]), lm(tempFormula,data = nmDat))
     }else{
@@ -170,6 +217,7 @@ for(j in 1:length(outcomeFormat)){
   tempOutcome = outcomeFormat[j]
   tempOutcomeRaw = outcomeVec[j]
   tempRsqs = rep(NA, length(iterVec))
+  
   for(i in 1:length(iterVec)){
     tempCovar = iterVec[i]
     if(tempCovar=="Full"){
@@ -246,6 +294,8 @@ for(i in 1:length(covarVec)){
   if(!is.numeric(tempCovarValues)){
     boxplot(ggTemp$PC1~tempCovarValues, xlab = tempCovarFormat, ylab = "PC1", main = paste0("No ", tempCovarFormat), las = 2)
     boxplot(ggTemp$PC2~tempCovarValues, xlab = tempCovarFormat, ylab = "PC2", main = paste0("No ", tempCovarFormat), las = 2)
+    boxplot(ggTemp$PC3~tempCovarValues, xlab = tempCovarFormat, ylab = "PC3", main = paste0("No ", tempCovarFormat), las = 2)
+    boxplot(ggTemp$PC4~tempCovarValues, xlab = tempCovarFormat, ylab = "PC4", main = paste0("No ", tempCovarFormat), las = 2)
   
     ###do k-means clustering
     tempKm = kmeans(curResids, centers = length(unique(tempCovarValues)), nstart = 10)
@@ -258,6 +308,10 @@ for(i in 1:length(covarVec)){
     legend(legend = paste0("cor: ",round(cor(ggTemp$PC1,tempCovarValues), 2)), "topright")
     plot(ggTemp$PC2,tempCovarValues, xlab = "PC2", ylab = tempCovarFormat, main = paste0("No ", tempCovarFormat))
     legend(legend = paste0("cor: ",round(cor(ggTemp$PC2,tempCovarValues), 2)), "topright")
+    plot(ggTemp$PC3,tempCovarValues, xlab = "PC3", ylab = tempCovarFormat, main = paste0("No ", tempCovarFormat))
+    legend(legend = paste0("cor: ",round(cor(ggTemp$PC3,tempCovarValues), 2)), "topright")
+    plot(ggTemp$PC4,tempCovarValues, xlab = "PC4", ylab = tempCovarFormat, main = paste0("No ", tempCovarFormat))
+    legend(legend = paste0("cor: ",round(cor(ggTemp$PC4,tempCovarValues), 2)), "topright")
   }
 }
 ```
