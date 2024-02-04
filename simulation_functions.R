@@ -1,7 +1,7 @@
 ###simulation functions
 
 
-prsSim = function(n, t, bprs, bst, beps, zStruct, zStructP){
+prsSim = function(n, t, bprs, bst, beps, zStruct, zStructP, q = 1){
   ### Function to simulate polygenic risk scores and phenotypes according to the Y_j = X beta_j + Z delta_j + epsilon_j model
   
   #n: number of individuals
@@ -14,6 +14,7 @@ prsSim = function(n, t, bprs, bst, beps, zStruct, zStructP){
     #2 -> unif(-2,2)
     #3 -> point-normal: Z~0 with probability zStructP, Z~N(1, 0.05) with probability 1-zStructP
   #zStructP: probability for point-normal distribution above
+  #q: the proportion of phenotypes that contribute to structural error.
   
   ###create dataframe of PRS
   ###PRS (X beta_j) are simulated according to beta distribution, with shape hyperparameters each distributed unif(1, 10)
@@ -37,19 +38,23 @@ prsSim = function(n, t, bprs, bst, beps, zStruct, zStructP){
     ###null placeholder
     chance = rep(NA, n)
   }else if(zStruct==3){
-    chance = rbinom(n, 1, zStructP)
+    chance = rbinom(n, 1, 1-zStructP)
     Z = rnorm(n,1, 0.05)
     Z[chance==0]=0
   }
   
-  ###delta_j is drawn from N(2, .1) distribution
+  ###delta_j is drawn from point normal distribution
   deltas = rnorm(t, 2, .1)
+  deltaChance = rbinom(t, 1, q)
+  deltas[deltaChance==0]=0
   
   ###generate structural error
   zDelta = Z%o%deltas
   
   ###scale structural error to have variance one
   zDelta = apply(zDelta, 2, FUN = function(x){x / sd(x)})
+  ###if above line of code generates NaNs, reset to zero
+  zDelta[is.nan(zDelta)] = 0
   
   ###label columns
   zDelta = as.data.frame(zDelta)
@@ -108,7 +113,10 @@ clustering = function(resids, clusters, method){
   #method: clustering method to apply. Currently, only k-means is implemented
   
   if(method == "kmeans"){
-    estClust = kmeans(resids, centers = 2, nstart = 3)
+    ###scale data before running kmeans
+    resids = scale(resids)
+    
+    estClust = kmeans(resids, centers = 2, nstart = 3, iter.max = 50)
     accuracy = adjustedRandIndex(estClust$cluster, clusters)
   }
   
@@ -120,6 +128,9 @@ pcaModeling = function(resids, Z){
   
   #resids: n x t matrix of the residuals of univariate phenotype-on-prs regressions
   #Z: n x 1 vector of ground truth structural covariate 
+  
+  ###scale data before running PCA
+  resids = scale(resids)
   
   pcs = prcomp(resids)
   

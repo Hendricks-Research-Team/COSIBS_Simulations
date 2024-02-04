@@ -1,0 +1,363 @@
+---
+title: "PRS Residual Analysis - White and Black REGARDS Subjects"
+author: "Jack Pattee"
+date: "11/30/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(kableExtra)
+library(cluster)
+library(mclust)
+library(car)
+library(ggplot2)
+library(pROC)
+library(MASS)
+library(mice)
+library(corrr)
+library(colorspace)
+library(pROC)
+
+set.seed(3308004)
+
+###read in white and black REGARDS subjects covariate data.
+dat = read.csv("~/Documents/Hendricks PRS/regards_data/baseline.csv")
+
+###read in PRS data for white subjects
+whitePrs = read.csv("~/Documents/Hendricks PRS/regards_data/trait_grs_env.csv")
+
+###read in PRS data for black subjects
+blackPrs = read.csv("~/Documents/Hendricks PRS/regards_data/grs_REGARDS_afr.csv")
+
+###define outcomes
+outcomeVec = c("EGFR_CKDEPI", "lvh_main", "Afib_SR_ECG", "Diab_SRMed_glu", "Lipidemia_meds_labs", "MI_SR_ECG","CAD_SR_ECG", "insulin", "Creatinine_urine", "Albumin_urine", "Cysc", "Crp", "Trigly", "Glucose", "Ldl", "Hdl", "DBP", "SBP", "Cholest", "Heartrate", "Stroke_SR", "CESD","Hyper_SRmeds_BP","TIA_SR","PAD_surgery","PAD_amputation","KidneyFailure_SR","HF_WakeNight","Falls","DVT_SR","Dialysis_SR","MCS","PCS", "PSS", "Cancer")
+
+###define covariates
+###11/30/2023: add in ADR score per tract, which documents Diez-Roux Neighborhood socioeconomic score
+###ended up not including ADR score per tract as it appears highly correlated with race
+covarVec = c('Alc_Use', 'Gender_x','Age_x', 'Smoke','ED_Cat','Income', 'Weight','Race_x')
+
+###cast blank entries to missing
+dat[dat==""] = NA
+```
+
+This report documents unsupervised learning analyses of the model residuals for traits measured in white and black REGARDS subjects (documented in the 'baseline.csv' file downloaded from Suraju Sadeeq's OneDrive). The following outcomes will be considered for inclusion as traits:
+
+eGFR, documented as ‘EGFR_CKDEPI’, left ventricular hypertrophy: ‘lvh_main’, atrial fibrillation: ‘Afib_SR_ECG’, diabetes: ‘Diab_SRMed_glu’, lipidemia: 'lipidemia_meds_labs', myocardial infarction: 'MI_SR_ECG', CAD: ‘CAD_SR_ECG’, insulin, creatinine level: 'Creatinine_urine', albumin level: 'Albumin_urine', cystatin C level: 'Cysc', C-reactive protein: 'Crp', triglycerides: 'Trigly', glucose, LDL, HDL, DBP, SBP, cholesterol: 'Cholest', heart rate: 'Heartrate', stroke: 'Stroke_SR', depression (as scale): 'CESD', hypertension diagnosis: "Hyper_SRmeds_BP", TIA: "TIA_SR", peripheral artery disease surgery: "PAD_surgery", peripheral artery disease amputation: "PAD_amputation", kidney failure: "KidneyFailure_SR", waking at night due to breathing difficutly: "HF_WakeNight", binary report of falls in the past year: "Falls", self-reported DVT: "DVT_SR", self-reported dialysis: "Dialysis_SR", SF-12 mental: "MCS", SF-12 physical: "PCS", perceived stress scale: "PSS", cancer diagnosis: "Cancer".
+
+Some variables are excluded based on inspection. CESD is highly skewed and does not appear to cohere to the Center for Epidemiological Studies - Depression scale, so it will be dropped. In this case, no subject has CESD>12, whereas the CES-D scale ranges from 0 to 60, and individuals are considered at risk for depression when the score exceeds 16.
+
+Report the missing rate for each outcome. Variables with missingness > 5% will be dropped, which includes the following variables: insulin, TIA, cancer.
+
+```{r, echo = FALSE}
+###drop CESD from outcomes
+outcomeVec = outcomeVec[outcomeVec!="CESD"]
+
+###calculate missingness proportion
+missingProp = apply(X = dat[,colnames(dat)%in%outcomeVec], MARGIN = 2, 
+                     FUN = function(x){sum(is.na(x))/length(x)})
+
+nameVec = names(missingProp)
+dispVec = missingProp
+names(dispVec) = NULL
+kable(data.frame(Outcome = nameVec, MissingProp = round(dispVec,3)))
+
+###drop insulin from the outcomes
+outcomeVec = outcomeVec[!outcomeVec%in%c("insulin","TIA_SR","Cancer")]
+```
+
+The following variables will be considered as covariates in the analysis: alcohol use 'Alc_Use', gender 'Gender_x', age 'Age_x', smoking 'Smoke', education 'ED_Cat', income 'Income', weight 'Weight', and race 'Race_x'.
+
+Report the missing rate for each covariate. Income is the only covariate missing at >10%; it will be dropped, and the other seven retained. A complete case analysis will be performed on all individuals non-missing for both the covariates and the outcomes.
+
+```{r, echo = FALSE}
+###calculate missingness proportion
+missingPropCovar = apply(X = dat[,colnames(dat)%in%covarVec], MARGIN = 2, 
+                     FUN = function(x){sum(is.na(x))/length(x)})
+nameVec = names(missingPropCovar)
+dispVec = missingPropCovar
+names(dispVec) = NULL
+kable(data.frame(Covariate = nameVec, MissingProp = round(dispVec,3)))
+
+covarVec = covarVec[covarVec!="Income"]
+```
+
+PRS scores will be included as a covariate for traits where it is available. PRSs are available in white and black subjects for the following traits: eGFR (PGS000303), CAD (PGS000011), albumin (PGS000669), C-reactive protein (PGS000314), triglycerides (PGS000066), LDL (PGS000061), DBP (PGS000302), SBP (PGS000301), TC (PGS000062), and heart rate (PGS000300).
+
+Note: the PGS for glucose (PGS000684) is present for white subjects but not black subjects.
+
+```{r, echo = FALSE}
+nmDat = dat[complete.cases(dat[,colnames(dat)%in%c(outcomeVec,covarVec)]),]
+
+pgsList = c("PGS000303", "PGS000011", "PGS000669", "PGS000314", "PGS000066", "PGS000061", "PGS000302", "PGS000301", "PGS000062", "PGS000300")
+pgsOutcomeList = c("EGFR_CKDEPI", "CAD_SR_ECG", "Albumin_urine", "Crp", "Trigly", "Ldl", "DBP", "SBP", "Cholest", "Heartrate")
+
+prsDat = rbind.data.frame(blackPrs[,match(c("IID",pgsList),colnames(blackPrs))],whitePrs[,match(c("IID",pgsList),colnames(whitePrs))])
+
+nmDat = merge(nmDat,prsDat, by = "IID")
+```
+
+The complete case analysis consists of `r nrow(nmDat)` subjects.
+
+The following outcomes are binary (and thus, logistic regression will be used): LVH, Diabetes, Lipidemia, AFib, MI, CAD, Stroke, hypertension, PAD surgery, PAD amputation, kidney failure, nighttime waking, reported falls, DVT, and dialysis. The frequency of the less common category for these binary outcomes is described below. Outcomes with frequency less than 2% will be dropped, namely: PAD surgery, PAD amputation, Dialysis.
+
+```{r, echo = FALSE}
+binOutcomeVec = c("lvh_main", "Diab_SRMed_glu", "Lipidemia_meds_labs","Afib_SR_ECG","MI_SR_ECG","CAD_SR_ECG","Stroke_SR","Hyper_SRmeds_BP", "PAD_surgery", "PAD_amputation", "KidneyFailure_SR", "HF_WakeNight", "Falls", "DVT_SR", "Dialysis_SR")
+rareCatProp = apply(X = nmDat[,colnames(nmDat)%in%binOutcomeVec], MARGIN = 2, 
+                     FUN = function(x){sort(table(x),decreasing = FALSE)[1]/length(x)})
+nameVec = names(rareCatProp)
+dispVec = rareCatProp
+names(dispVec) = NULL
+kable(data.frame(Outcome = nameVec, RareProp = round(dispVec,3)))
+
+for(i in 1:length(binOutcomeVec)){
+  tempInd = which(colnames(nmDat)==binOutcomeVec[i])
+  nmDat[,tempInd] = ifelse(nmDat[,tempInd]=="Y",1,0)
+}
+
+outcomeVec = outcomeVec[!outcomeVec%in%c("PAD_surgery", "PAD_amputation", "Dialysis_SR")]
+binOutcomeVec = binOutcomeVec[!binOutcomeVec%in%c("PAD_surgery", "PAD_amputation", "Dialysis_SR")]
+```
+
+Heatmap of correlation between outcome variables.
+
+```{r, echo = FALSE}
+corMat = correlate(nmDat[,colnames(nmDat)%in%outcomeVec], method = "pearson")
+corPlotDat = stretch(corMat)
+
+corPlot = ggplot(data = corPlotDat, aes(x,y, fill = r)) + geom_tile() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  scale_fill_continuous_divergingx(palette = "RdBu", mid = 0)
+print(corPlot)
+```
+
+```{r, echo = FALSE}
+covarFormat = c("Alcohol","Gender","Age","Smoking","Education","Weight","Race")
+outcomeFormat = c("eGFR","LVH","AFib","Diabetes","Lipidemia","MI","CAD","Creatinine","Albumin","CysC","CRP","TG","Glucose","LDL","HDL", "DBP","SBP","TC","HR","Stroke","Hypertension","KidneyFailure", "Waking", "Falls", "DVT", "MCS", "PCS", "PSS")
+```
+
+A final list of all `r length(outcomeFormat)` outcome variables that pass QC and are used in modeling:
+
+```{r, echo = FALSE}
+print(outcomeFormat)
+```
+
+```{r, echo = FALSE, include = FALSE}
+###reformat covarVec to allow age to use polynomial terms
+covarVec[covarVec=="Age_x"] = "poly(Age_x, degree = 2)"
+
+###fit full models (with all covariates) for all outcomes
+for(i in 1:length(outcomeVec)){
+  tempOutcome = outcomeVec[i]
+  
+  ###regress against PGS if one is available
+  if(!tempOutcome%in%pgsOutcomeList){
+    tempFormula = as.formula(paste0(tempOutcome,"~",paste0(covarVec, collapse = "+")))
+  }else{
+    tempFormula = as.formula(paste0(tempOutcome,"~",paste0(c(covarVec,pgsList[pgsOutcomeList==tempOutcome]), collapse = "+")))
+  }
+  
+  if(!tempOutcome%in%binOutcomeVec){
+    assign(paste0(outcomeFormat[i],"Full"), lm(tempFormula,data = nmDat))
+  }else{
+    assign(paste0(outcomeFormat[i],"Full"), glm(tempFormula,data = nmDat, family = "binomial"))
+  }
+}
+
+###fit models holding one covariate out in sequence for all outcomes
+for(i in 1:length(outcomeVec)){
+  for(j in 1:length(covarVec)){
+    tempOutcome = outcomeVec[i]
+    
+    ###regress against PGS if one is available
+    if(!tempOutcome%in%pgsOutcomeList){
+      tempFormula = as.formula(paste0(tempOutcome,"~",paste0(covarVec[-j], collapse = "+")))
+    }else{
+      tempFormula = as.formula(paste0(tempOutcome,"~",paste0(c(covarVec[-j],pgsList[pgsOutcomeList==tempOutcome]), collapse = "+")))
+    }
+    
+    if(!tempOutcome%in%binOutcomeVec){
+      assign(paste0(outcomeFormat[i],"No",covarFormat[j]), lm(tempFormula,data = nmDat))
+    }else{
+      assign(paste0(outcomeFormat[i],"No",covarFormat[j]), glm(tempFormula,data = nmDat, family = "binomial"))
+    }
+  }
+}
+
+###get residuals for the full model
+fullResids = as.data.frame(matrix(NA, nrow = nrow(nmDat), ncol = length(outcomeVec)))
+colnames(fullResids) = outcomeFormat
+for(i in 1:length(outcomeVec)){
+  tempOutcome = outcomeFormat[i]
+  tempMod = get(paste0(tempOutcome,"Full"))
+  if(!tempOutcome%in%binOutcomeVec){
+    fullResids[,i] = studres(tempMod)
+  }else{
+    fullResids[,i] = residuals(tempMod, type = "pearson")
+  }
+}
+fullResids = scale(fullResids)
+
+###get residuals for the hold-one-out models
+for(j in 1:length(covarVec)){
+  tempCovar = covarFormat[j]
+  tempResids = as.data.frame(matrix(NA, nrow = nrow(nmDat), ncol = length(outcomeVec)))
+  for(i in 1:length(outcomeVec)){
+    tempOutcome = outcomeFormat[i]
+    tempMod = get(paste0(tempOutcome,"No",tempCovar))
+    if(!tempOutcome%in%binOutcomeVec){
+      tempResids[,i] = studres(tempMod)
+    }else{
+      tempResids[,i] = residuals(tempMod, type = "pearson")
+    }
+  }
+  tempResids = scale(tempResids)
+  assign(paste0("no",tempCovar,"Resids"),tempResids)
+}
+
+
+```
+
+
+Calculate the coefficient of determination for each of the models to give a sense of how predictive each covariate is. For the logistic models, use AUROC. These plots are interpreted as follows: the point label represents the predictive accuracy of the model without that variable included.
+
+```{r, echo = FALSE, warning=FALSE}
+iterVec = c("Full",covarFormat)
+
+###generate vectors to hold the predictive utility lost when a variable is not in the model
+for(entry in covarFormat){
+  assign(paste0(entry,"PredLost"), NULL)
+}
+
+for(j in 1:length(outcomeFormat)){
+  tempOutcome = outcomeFormat[j]
+  tempOutcomeRaw = outcomeVec[j]
+  tempRsqs = rep(NA, length(iterVec))
+  
+  for(i in 1:length(iterVec)){
+    tempCovar = iterVec[i]
+    if(tempCovar=="Full"){
+      tempMod = get(paste0(tempOutcome,"Full"))
+    }else{
+      tempMod = get(paste0(tempOutcome,"No",tempCovar))
+    }
+    if(!tempOutcomeRaw%in%binOutcomeVec){
+      tempRsqs[i] = summary(tempMod)$r.squared
+    }else{
+      tempRsqs[i] = auc(nmDat[,which(colnames(nmDat)==tempOutcomeRaw)],predict(tempMod))
+    }
+    if(tempCovar!="Full"){
+      tempVec = get(paste0(tempCovar,"PredLost"))
+      tempVec = c(tempVec, tempRsqs[1] - tempRsqs[i])
+      assign(paste0(tempCovar,"PredLost"),tempVec)
+    }
+  }
+  assign(paste0(tempOutcome,"R2"),tempRsqs)
+}
+
+###plot the outcomes
+for(i in 1:length(outcomeFormat)){
+  tempOutcome = outcomeFormat[i]
+  tempOutcomeRaw = outcomeVec[i]
+  if(!tempOutcomeRaw%in%binOutcomeVec){
+    ggDatTemp = cbind.data.frame(iterVec, get(paste0(tempOutcome,"R2")), Index = 1:length(iterVec))
+    colnames(ggDatTemp)[2] = paste0(tempOutcome,"R2")
+    tempPlot = ggplot(data = ggDatTemp, aes(y = get(paste0(tempOutcome,"R2")), x = Index, label = iterVec)) +
+      geom_line() + geom_point() + geom_text(hjust = 1, vjust = 0) +
+      xlab(NULL) + ylab("R2") + theme(axis.text.x = element_blank()) + ggtitle(paste0(tempOutcome," Regression Performance"))
+    print(tempPlot)
+  }else{
+    ggDatTemp = cbind.data.frame(iterVec, get(paste0(tempOutcome,"R2")), Index = 1:length(iterVec))
+    colnames(ggDatTemp)[2] = paste0(tempOutcome,"R2")
+    tempPlot = ggplot(data = ggDatTemp, aes(y = get(paste0(tempOutcome,"R2")), x = Index, label = iterVec)) +
+      geom_line() + geom_point() + geom_text(hjust = 1, vjust = 0) +
+      xlab(NULL) + ylab("AUC") + theme(axis.text.x = element_blank()) + ggtitle(paste0(tempOutcome," Regression Performance"))
+    print(tempPlot)
+  }
+}
+
+###print distribution of loss of predictive utility when each covariate is left out
+###separate plot for binary outcomes (AUC), continuous outcomes (R^2)
+binCovarInd = which(outcomeVec%in%binOutcomeVec)
+for(i in 1:length(covarFormat)){
+  tempR2s = get(paste0(covarFormat[i],"PredLost"))
+  dfR2 = data.frame(R2 = tempR2s[-binCovarInd])
+  dfAuc = data.frame(AUC = tempR2s[binCovarInd])
+  ggDensR2 = ggplot(dfR2, aes(x = R2)) + geom_histogram() + ggtitle(paste0(covarFormat[i]), " R2 Lost")
+  print(ggDensR2)
+  ggDensAUC = ggplot(dfAuc, aes(x = AUC)) + geom_histogram() + ggtitle(paste0(covarFormat[i]), " AUC Lost")
+  print(ggDensAUC)
+}
+```
+
+
+Assess clustering and PCs for full set of residuals.
+
+```{r, echo = FALSE}
+fullGap = clusGap(fullResids, FUN = kmeans, nstart = 3, K.max = 10, B =10)
+plot(fullGap, main = "K-Means Gap Stat - all covariates")
+
+pcFull = prcomp(fullResids)
+plot(pcFull$x[,1],pcFull$x[,2], xlab = "PC1", ylab = "PC2", main = "All Covariates")
+```
+
+Assess clustering and PCs for model residuals with each of the seven covariates held out.
+```{r, echo = FALSE}
+for(i in 1:length(covarVec)){
+  tempCovar = covarVec[i]
+  if(tempCovar=="poly(Age_x, degree = 2)") tempCovar = "Age_x"
+  tempCovarFormat = covarFormat[i]
+  
+  ###do gap statistic to determine optimal number of clusters
+  curResids = get(paste0("no",tempCovarFormat,"Resids"))
+  tempClus = clusGap(curResids, FUN = kmeans, nstart = 3, K.max = 10, B = 10)
+  plot(tempClus, main = paste0("K-Means Gap Stat - no ", tempCovarFormat))
+  
+  tempCovarValues = nmDat[,which(colnames(nmDat)==tempCovar)]
+  
+  ###scatterplot of first two PCs, color points by covariate
+  pcTemp = prcomp(curResids)
+  ggTemp = as.data.frame(pcTemp$x)
+  ggTemp$covar = tempCovarValues
+  colnames(ggTemp)[ncol(ggTemp)] = tempCovarFormat
+  ggTempScatter = ggplot(ggTemp, aes(x = PC1, y = PC2, color = !!sym(tempCovarFormat))) + geom_point() + 
+    ggtitle(paste0("No ", tempCovarFormat))
+  print(ggTempScatter)
+  
+  if(!is.numeric(tempCovarValues)){
+    boxplot(ggTemp$PC1~tempCovarValues, xlab = tempCovarFormat, ylab = "PC1", main = paste0("No ", tempCovarFormat), las = 2)
+    boxplot(ggTemp$PC2~tempCovarValues, xlab = tempCovarFormat, ylab = "PC2", main = paste0("No ", tempCovarFormat), las = 2)
+    boxplot(ggTemp$PC3~tempCovarValues, xlab = tempCovarFormat, ylab = "PC3", main = paste0("No ", tempCovarFormat), las = 2)
+    boxplot(ggTemp$PC4~tempCovarValues, xlab = tempCovarFormat, ylab = "PC4", main = paste0("No ", tempCovarFormat), las = 2)
+  
+    ###do k-means clustering
+    tempKm = kmeans(curResids, centers = length(unique(tempCovarValues)), nstart = 10)
+    print(paste0("Adjusted rand index, no ",tempCovarFormat, ": ", 
+                 round(adjustedRandIndex(tempKm$cluster, tempCovarValues), 3)))
+    print(paste0("No ",tempCovarFormat," table of clustering results"))
+    print(table(tempKm$cluster, tempCovarValues))
+  }else{
+    plot(ggTemp$PC1,tempCovarValues, xlab = "PC1", ylab = tempCovarFormat, main = paste0("No ", tempCovarFormat))
+    legend(legend = paste0("cor: ",round(cor(ggTemp$PC1,tempCovarValues), 2)), "topright")
+    plot(ggTemp$PC2,tempCovarValues, xlab = "PC2", ylab = tempCovarFormat, main = paste0("No ", tempCovarFormat))
+    legend(legend = paste0("cor: ",round(cor(ggTemp$PC2,tempCovarValues), 2)), "topright")
+    plot(ggTemp$PC3,tempCovarValues, xlab = "PC3", ylab = tempCovarFormat, main = paste0("No ", tempCovarFormat))
+    legend(legend = paste0("cor: ",round(cor(ggTemp$PC3,tempCovarValues), 2)), "topright")
+    plot(ggTemp$PC4,tempCovarValues, xlab = "PC4", ylab = tempCovarFormat, main = paste0("No ", tempCovarFormat))
+    legend(legend = paste0("cor: ",round(cor(ggTemp$PC4,tempCovarValues), 2)), "topright")
+  }
+}
+```
+
+More in-depth investigation of gender.
+
+```{r, echo = FALSE}
+ngPcs = prcomp(noGenderResids)
+for(i in 1:5){
+  tempRoc = roc(response = nmDat$Gender_x, predictor = ngPcs$x[,i])
+  plot(tempRoc, main = paste0("PC",i," predicting gender"))
+  print(paste0("AUC for PC",i," predicting gender: ", round(as.numeric(auc(tempRoc)),2)))
+}
+```

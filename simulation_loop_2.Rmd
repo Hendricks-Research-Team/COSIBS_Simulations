@@ -23,6 +23,17 @@ set.seed(3308004)
 
 This RMarkdown executes simulations as described in 'Hendricks Report 2' (Sept 11, 2023). The structure of the simulation is described in that document; the inputs to the simulation are described here, the simulations themselves conducted, and the accuracy of the simulations is assessed.
 
+Table of abbreviations used in the report:
+
+| Abbreviation | Meaning |
+| -------------|---------|
+| VXB | Proportion of phenotype variance explained by known covariates |
+| VZD | Proportion of phenotype variance explained by structural error |
+| VE | Proportion of phenotype variance explained by random error |
+| P | Proportion of subjects with nonzero structural error contribution to phenotype |
+| Q | Proportion of traits that contribute to structural error |
+| PVE | Proportion of variance explained (by) |
+
 The following describes the values the simulation parameter takes. Only one parameter varies at a time. Non-varying parameters always take the **bolded** value.
 
 n: 1000, **2000**, 4000
@@ -30,6 +41,8 @@ n: 1000, **2000**, 4000
 t: 5, 10, **20**, 30, 50
 
 Relative proportion of phenotypic variance controlled by $\sf{X_{\beta}}$, $\sf{Z_{\delta}}$, and $\sf{\epsilon}$, in ordered triplets.
+
+0, .1, .9
 
 .1, .1, .8
 
@@ -45,6 +58,8 @@ Relative proportion of phenotypic variance controlled by $\sf{X_{\beta}}$, $\sf{
 
 .7, .1, .2
 
+0, .05, .95
+
 .1, .05, .85
 
 .2, .05, .75
@@ -59,24 +74,43 @@ Relative proportion of phenotypic variance controlled by $\sf{X_{\beta}}$, $\sf{
 
 .7, .05, .25
 
+0, .01, .99
+
+.1, .01, .89
+
+.2, .01, .79
+
+.3, .01, .69
+
+.4, .01, .59
+
+.5, .01, .49
+
+.6, .01, .39
+
+.7, .01, .29
+
 
 Distribution of Z: Both Case 1 and Case 2 will be conducted for all other simulation settings (except for $p$, as below, which will only be done for Case 2).
 
 When Z is distributed as Case 2, the proportion of structural covariate Z draws that is distributed at point mass zero: .2, **.5**, .8.
 
+Distribution of $q$: .1, .2, .5, .8, ***1***
+
 In the case of Z distributed according to case 2, the environmental error is bimodal. In this case, the 'effectiveness' will be assessed according to accuracy of k-means clustering. Specifically, k-means clusters will be estimated with two cluster centers, and cluster quality will be assessed using the adjusted Rand index. In the case of Z distributed according to case 1, the structural error is unimodal. In both case 1 and case 2, the effectiveness of the method will be assessed as the proportion of variation in environmental error explained by each of the first five principal components in single linear regression. Each simulation is run for 200 replications.
 
 
-```{r, echo = FALSE, cache = TRUE}
+```{r, echo = FALSE}
 #set-up simulation variables to iterate over
-n = c(rep(c(2000, 1000, 4000, rep(2000, 17)), 2), 2000, 2000)
-t = c(rep(c(20, 20, 20, 5, 10, 30, 50, rep(20, 13)), 2), 20, 20)
-vxb = c(rep(c(rep(.3, 7), .1, .2, .4, .5, .6, .7,seq(.1, .7, .1)),2),.3, .3)
-vzd = c(rep(c(rep(.1, 7), rep(.1, 6), rep(.05,7)),2), .1, .1)
-ve = c(rep(c(rep(.6, 7), .8, .7, .5, .4, .3, .2, rev(seq(.25,.85,.1))), 2), .6, .6)
-Zset = c(rep(3, 20), rep(1, 20), 3, 3)
-Zp = c(rep(.5, 40), .2, .8)
-simSettings = data.frame(Setting=1:length(n), n, t, vxb,vzd,ve,Zset, Zp)
+n = c(rep(c(2000, 1000, 4000, rep(2000, 27)), 2), rep(2000, 10))
+t = c(rep(c(20, 20, 20, 5, 10, 30, 50, rep(20, 23)), 2), rep(20, 10))
+vxb = c(rep(c(rep(.3, 7), 0, .1, .2, .4, .5, .6, .7,seq(0, .7, .1), seq(0, .7, .1)),2),rep(.3,10))
+vzd = c(rep(c(rep(.1, 7), rep(.1, 7), rep(.05,8), rep(.01, 8)),2), rep(.1, 10))
+ve = c(rep(c(rep(.6, 7), .9, .8, .7, .5, .4, .3, .2, rev(seq(.25,.95,.1)), rev(seq(.29,.99,.1))), 2), rep(.6, 10))
+Zset = c(rep(3, 30), rep(1, 30), rep(3, 6), rep(1,4))
+Zp = c(rep(.5, 60), .2, .8, rep(.5, 8))
+q = c(rep(1, 62), rep(c(.1,.2,.5,.8),2))
+simSettings = data.frame(Setting=1:length(n), n, t, vxb,vzd,ve,Zset, Zp, q)
 kable(simSettings, caption = "Table 1: Simulation Settings")
 
 reps = 200
@@ -97,7 +131,7 @@ for(i in 1:nrow(simSettings)){
     #proportion of structural variance
     #proportion of random variance
     #distribution of structural error Z term
-    simData = prsSim(n = n[i], t = t[i], bprs = vxb[i], bst = vzd[i], beps = ve[i], zStruct = Zset[i], zStructP = Zp[i])
+    simData = prsSim(n = n[i], t = t[i], bprs = vxb[i], bst = vzd[i], beps = ve[i], zStruct = Zset[i], zStructP = Zp[i], q = q[i])
   
     ###residuals from univariate regression of simulated phenotype on PRS
     resids = getResiduals(simData$phenos, simData$prs)
@@ -117,14 +151,19 @@ for(i in 1:nrow(simSettings)){
 
 Visualizations of clustering accuracy against VXB, with other parameters held constant (except for VE, which varies with VXB). Boxplots of clustering accuracy by simulation setting. Simulation setting (according to rows of Table 1) is annotated to each boxplot.
 
-```{r, echo = FALSE}
+```{r, echo = FALSE, warnings = FALSE}
+###NOTE: after implementing some simulation settings where clustering is difficult, we are getting some warnings in k-means:
+### Warning: Quick-TRANSfer stage steps exceeded maximum (= 100000)
+###suppressing warnings so output looks better.
+
 ###define clustering accuracy dataset for plotting
 clusterFrame = data.frame(Setting = as.factor(clusterSetting), 
                           Accuracy = clusterAccs, 
                           VXB = rep(vxb, each = reps)[rep(Zset,each=reps)==3],
                           t = rep(t, each = reps)[rep(Zset,each=reps)==3],
                           n = rep(n, each = reps)[rep(Zset,each=reps)==3], 
-                          p = rep(Zp, each = reps)[rep(Zset,each=reps)==3])
+                          p = rep(Zp, each = reps)[rep(Zset,each=reps)==3],
+                          q = rep(q, each = reps)[rep(Zset,each=reps)==3])
 ypos = clusterFrame %>% 
   group_by(Setting) %>%
   summarize(ypos = min(Accuracy)-.025)
@@ -134,37 +173,56 @@ labelDat = data.frame(Setting = ypos$Setting,
                       t = as.factor(t[Zset==3]), 
                       n = as.factor(n[Zset==3]),
                       p = as.factor(Zp[Zset==3]),
+                      q = as.factor(q[Zset==3]),
                       ypos = ypos$ypos)
 
 #subset data for plotting
-cf1 = subset(clusterFrame, Setting%in%c(1,8,9,10,11,12,13))
+cf1 = subset(clusterFrame, Setting%in%c(1,8:14))
 cf1$VXB = as.factor(cf1$VXB)
-lb1 = subset(labelDat, Setting%in%c(1,8,9,10,11,12,13))
+lb1 = subset(labelDat, Setting%in%c(1,8:14))
 
 #subset data for plotting
-cf2 = subset(clusterFrame, Setting%in%14:20)
+cf2 = subset(clusterFrame, Setting%in%15:22)
 cf2$VXB = as.factor(cf2$VXB)
-lb2 = subset(labelDat, Setting%in%14:20)
+lb2 = subset(labelDat, Setting%in%15:22)
+
+#subset data for plotting
+cf3 = subset(clusterFrame, Setting%in%23:30)
+cf3$VXB = as.factor(cf3$VXB)
+lb3 = subset(labelDat, Setting%in%23:30)
 
 ggBox1 = ggplot(data = cf1, aes(x = VXB, y = Accuracy)) + 
   geom_boxplot() + theme_bw() + 
   geom_text(data = lb1, aes(label = Setting,x = VXB, y = ypos), show.legend = FALSE) + 
-  ggtitle("ARI for Simulations with VZD = 0.1")
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("Clustering Accuracy for Simulations with VZD = 0.1") + ylab("Adjusted Rand Index") + xlab("Proportion of variance explained by covariates")
 print(ggBox1)
 
 ggBox2 = ggplot(data = cf2, aes(x = VXB, y = Accuracy)) + 
   geom_boxplot() + theme_bw() + 
   geom_text(data = lb2, aes(label = Setting,x = VXB, y = ypos), show.legend = FALSE) + 
-  ggtitle("ARI for Simulations with VZD = 0.05")
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("ARI for Simulations with VZD = 0.05") + ylab("Adjusted Rand Index") + xlab("Proportion of variance explained by covariates")
 print(ggBox2)
 
+ggBox3 = ggplot(data = cf3, aes(x = VXB, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + 
+  geom_text(data = lb3, aes(label = Setting,x = VXB, y = ypos), show.legend = FALSE) + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ggtitle("ARI for Simulations with VZD = 0.01") + ylab("Adjusted Rand Index") + xlab("Proportion of variance explained by covariates")
+print(ggBox3)
+
+
 cfBoth = rbind.data.frame(cbind.data.frame(cf1, VZD = as.factor(rep(.1,nrow(cf1)))),
-                          cbind.data.frame(cf2, VZD = as.factor(rep(.05,nrow(cf2)))))
-labelBoth = subset(labelDat, Setting%in%c(1,8:20))
+                          cbind.data.frame(cf2, VZD = as.factor(rep(.05,nrow(cf2)))),
+                          cbind.data.frame(cf3, VZD = as.factor(rep(.01,nrow(cf2)))))
+labelBoth = subset(labelDat, Setting%in%c(1,8:30))
 
 ggBoxBoth = ggplot(data = cfBoth, aes(x = VXB, y = Accuracy, color = VZD)) + 
-  geom_boxplot(position = position_dodge(0)) + theme_bw() + 
-  geom_text(data = labelBoth, aes(label = Setting,x = VXB, y = ypos, color = VZD), show.legend = FALSE)
+  geom_boxplot(position = position_dodge(0)) + theme_bw() +
+  geom_text(data = labelBoth, aes(label = Setting,x = VXB, y = ypos, color = VZD), show.legend = FALSE) + 
+  coord_cartesian(ylim = c(-.1,1)) + 
+  ylab("Adjusted Rand Index") + xlab("Proportion of variance explained by covariates")
 print(ggBoxBoth)
 ```
 
@@ -176,9 +234,9 @@ cft$t = as.factor(cft$t)
 lbt = subset(labelDat, Setting%in%c(1,4,5,6,7))
 
 ggBoxt = ggplot(data = cft, aes(x = t, y = Accuracy)) + 
-  geom_boxplot() + theme_bw() + xlab("Number of traits") + 
+  geom_boxplot() + theme_bw() + xlab("Number of traits") +  ylab("Adjusted Rand Index") + 
   geom_text(data = lbt, aes(label = Setting, x = t, y = ypos), show.legend = FALSE) + 
-  ggtitle("ARI for Simulations with varying number of traits")
+  ggtitle("Clustering Accuracy for Simulations with Varying Number of Traits")
 print(ggBoxt)
 ```
 
@@ -190,24 +248,38 @@ cfn$n = as.factor(cfn$n)
 lbn = subset(labelDat, Setting%in%c(1,2,3))
 
 ggBoxn = ggplot(data = cfn, aes(x = n, y = Accuracy)) + 
-  geom_boxplot() + theme_bw() + xlab("Number of subjects") + 
+  geom_boxplot() + theme_bw() + xlab("Number of subjects") + ylab("Adjusted Rand Index") +
   geom_text(data = lbn, aes(label = Setting, x = n, y = ypos), show.legend = FALSE) + 
-  ggtitle("ARI for Simulations with varying number of subjects")
+  ggtitle("Clustering Accuracy for Simulations with Varying Number of Traits")
 print(ggBoxn)
 ```
 
-Visualize clustering accuracy against p, the proportion of subjects with no structural contribution to error.
+Visualize clustering accuracy against p, the proportion of subjects with contribution to structural error.
 
 ```{r, echo = FALSE}
-cfp = subset(clusterFrame, Setting%in%c(1,41,42))
+cfp = subset(clusterFrame, Setting%in%c(1,61,62))
 cfp$p = as.factor(cfp$p)
-lbp = subset(labelDat, Setting%in%c(1,41,42))
+lbp = subset(labelDat, Setting%in%c(1,61,62))
 
 ggBoxp = ggplot(data = cfp, aes(x = p, y = Accuracy)) + 
-  geom_boxplot() + theme_bw() + xlab("P") + 
+  geom_boxplot() + theme_bw() + xlab("q") + ylab("Adjusted Rand Index") + 
   geom_text(data = lbp, aes(label = Setting, x = p, y = ypos), show.legend = FALSE) + 
-  ggtitle("ARI for Case 2 simulations with varying p")
+  ggtitle("Clustering Accuracy for Simulations with Varying p")
 print(ggBoxp)
+```
+
+Visualize clustering accuracy against q, the proportion of traits with contribution to structural error.
+
+```{r, echo = FALSE}
+cfq = subset(clusterFrame, Setting%in%c(1,63:66))
+cfq$q = as.factor(cfq$q)
+lbq = subset(labelDat, Setting%in%c(1,63:66))
+
+ggBoxq = ggplot(data = cfq, aes(x = q, y = Accuracy)) + 
+  geom_boxplot() + theme_bw() + xlab("Proportion of phenotypes contributing to structural error") + ylab("Adjusted Rand Index") + 
+  geom_text(data = lbq, aes(label = Setting, x = q, y = ypos), show.legend = FALSE) + 
+  ggtitle("Clustering Accuracy for Simulations with Varying q")
+print(ggBoxq)
 ```
 
 Visualization of the proportion of variance explained by the first PC against VXB, with other parameters held constant (except for VE, which varies with VXB).
@@ -220,6 +292,7 @@ pcaFrame = data.frame(Setting = as.factor(pcaSetting),
                       t = rep(t, each = reps),
                       n = rep(n, each = reps), 
                       p = rep(Zp, each = reps),
+                      q = rep(q, each = reps),
                       Shape = as.factor(ifelse(rep(Zset,each=reps)==3, "Bimodal", "Unimodal")))
 
 yposPca = pcaFrame %>% 
@@ -231,70 +304,109 @@ ldPca = data.frame(Setting = yposPca$Setting,
                     t = as.factor(t), 
                     n = as.factor(n),
                     p = as.factor(Zp),
+                   q = as.factor(q),
                    Shape = ifelse(Zset==3, "Bimodal","Unimodal"),
                     ypos = yposPca$ypos)
 
 #subset data for plotting
-pf1 = subset(pcaFrame, Setting%in%c(1,8:13,21,28:33))
+pf1 = subset(pcaFrame, Setting%in%c(1,8:14,31,38:44))
 pf1$VXB = as.factor(pf1$VXB)
 ###labelling not really working in this setup; for now, don't attempt it.
-ldpc1 = subset(ldPca, Setting%in%c(1,8:13,21,28:33))
+#ldpc1 = subset(ldPca, Setting%in%c(1,8:13,21,28:33))
 
 ggBoxPc1 = ggplot(data = pf1, aes(x = VXB, y = PC1, color = Shape)) + 
   geom_boxplot() + theme_bw() + 
-  ggtitle("PVE by PC1 for Simulations with VZD = 0.1, default parameters")
+  ggtitle("PVE by PC1 for Simulations with VZD = 0.1, default parameters") + 
+  xlab("Proportion of variance explained by covariates") + ylab("Proportion of variance explained by PC1")
 print(ggBoxPc1)
 
 #subset data for plotting
-pf2 = subset(pcaFrame, Setting%in%c(14:20, 34:40))
+pf2 = subset(pcaFrame, Setting%in%c(15:22, 45:52))
 pf2$VXB = as.factor(pf2$VXB)
 
 ggBoxPc2 = ggplot(data = pf2, aes(x = VXB, y = PC1, color = Shape)) + 
   geom_boxplot() + theme_bw() + 
-  ggtitle("PVE by PC1 for Simulations with VZD = 0.05, default parameters")
+  ggtitle("PVE by PC1 for Simulations with VZD = 0.05, default parameters") + 
+  xlab("Proportion of variance explained by covariates") + ylab("Proportion of variance explained by PC1")
 print(ggBoxPc2)
+
+#subset data for plotting
+pf3 = subset(pcaFrame, Setting%in%c(23:30, 53:60))
+pf3$VXB = as.factor(pf3$VXB)
+
+ggBoxPc3 = ggplot(data = pf3, aes(x = VXB, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + 
+  ggtitle("PVE by PC1 for Simulations with VZD = 0.01, default parameters") + 
+  xlab("Proportion of variance explained by covariates") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPc3)
 ```
 
 Visualize PVE by the first PC against the number of traits.
 
 ```{r, echo = FALSE}
-pft = subset(pcaFrame, Setting%in%c(1,4:7,21,24:27))
+pft = subset(pcaFrame, Setting%in%c(1,4:7,31,34:37))
 pft$t = as.factor(pft$t)
 
 ggBoxPct = ggplot(data = pft, aes(x = t, y = PC1, color = Shape)) + 
   geom_boxplot() + theme_bw() + xlab("Number of traits") + 
-  ggtitle("PVE by PC1 against number of traits, default parameters")
+  ggtitle("PVE by PC1 against number of traits, default parameters") + ylab("Proportion of variance explained by PC1")
 print(ggBoxPct)
 ```
 
 Visualize PVE by the first PC against the number of subjects.
 
 ```{r, echo = FALSE}
-pfn = subset(pcaFrame, Setting%in%c(1:3,21:23))
+pfn = subset(pcaFrame, Setting%in%c(1:3,31:33))
 pfn$n = as.factor(pfn$n)
 
 ggBoxPcn = ggplot(data = pfn, aes(x = n, y = PC1, color = Shape)) + 
   geom_boxplot() + theme_bw() + xlab("Number of subjects") + 
-  ggtitle("PVE by PC1 against number of subjects, default parameters")
+  ggtitle("PVE by PC1 against number of subjects, default parameters") + ylab("Proportion of variance explained by PC1")
 print(ggBoxPcn)
+```
+
+Visualize PVE by the first PC against q.
+
+```{r, echo = FALSE}
+pfq = subset(pcaFrame, Setting%in%c(1,31,63:70))
+pfq$q = as.factor(pfq$q)
+
+ggBoxPcq = ggplot(data = pfq, aes(x = q, y = PC1, color = Shape)) + 
+  geom_boxplot() + theme_bw() + xlab("Proportion of phenotypes contributing to structural error") + 
+  ggtitle("PVE by PC1 against q, default parameters") + ylab("Proportion of variance explained by PC1")
+print(ggBoxPcq)
 ```
 
 Example plots of $\sf{X_{\beta}}$, $\sf{Z_{\delta}}$, and $\sf{\epsilon}$ for a single phenotype in some simulation settings.
 
 ```{r, echo = FALSE}
-tempSim1 = prsSim(n = 2000, t = 20, bprs = .3, bst = .1, beps = .6, zStruct = 3, zStructP = .5)
+tempSim1 = prsSim(n = n[1], t = t[1], bprs = vxb[1], bst = vzd[1], beps = ve[1], zStruct = Zset[1], zStructP = Zp[1], q = q[1])
 ggDat1 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
                     Value = c(tempSim1$prs[,1],tempSim1$struct[,1],tempSim1$error[,1]))
 ggDensity1 = ggplot(data = ggDat1, aes(x = Value, fill = Source)) + 
   geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 1")
 print(ggDensity1)
 
-tempSim21 = prsSim(n = 2000, t = 20, bprs = .3, bst = .1, beps = .6, zStruct = 1, zStructP = .5)
+tempSim21 = prsSim(n = n[31], t = t[31], bprs = vxb[31], bst = vzd[31], beps = ve[31], zStruct = Zset[31], zStructP = Zp[31], q = q[31])
 ggDat21 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
                     Value = c(tempSim21$prs[,1],tempSim21$struct[,1],tempSim21$error[,1]))
 ggDensity21 = ggplot(data = ggDat21, aes(x = Value, fill = Source)) + 
-  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 21")
+  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 31")
 print(ggDensity21)
+
+tempSim63 = prsSim(n = n[63], t = t[63], bprs = vxb[63], bst = vzd[63], beps = ve[63], zStruct = Zset[63], zStructP = Zp[63], q = q[63])
+ggDat63 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
+                    Value = c(tempSim63$prs[,1],tempSim63$struct[,1],tempSim63$error[,1]))
+ggDensity63 = ggplot(data = ggDat63, aes(x = Value, fill = Source)) + 
+  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 63")
+print(ggDensity63)
+
+tempSim67 = prsSim(n = n[67], t = t[67], bprs = vxb[67], bst = vzd[67], beps = ve[67], zStruct = Zset[67], zStructP = Zp[67], q = q[67])
+ggDat67 = data.frame(Source = rep(c("XB","ZD","E"), each = 2000),
+                    Value = c(tempSim67$prs[,1],tempSim67$struct[,1],tempSim67$error[,1]))
+ggDensity67 = ggplot(data = ggDat67, aes(x = Value, fill = Source)) + 
+  geom_density(alpha = .3) + theme_bw() + ggtitle("Simulation Setting 67")
+print(ggDensity67)
 ```
 
 
